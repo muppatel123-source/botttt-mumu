@@ -1,0 +1,39 @@
+<%- include('partials/header') %>
+
+<section class="hero">
+    <p class="eyebrow">Live Tournament Portal</p>
+    <h1><%= settings?.name || 'HandFootball League' %></h1>
+    <p class="hero-text">
+        Fixtures, standings, player stats, and tournament updates in one place.
+    </p>
+</section>
+
+<section class="stats-grid">
+    <div class="stat-card">
+        <span>Teams</span>
+        <strong><%= stats.teams %></strong>
+    </div>
+
+    <div class="stat-card">
+        <span>Players</span>
+        <strong><%= stats.players %></strong>
+    </div>
+
+    <div class="stat-card">
+        <span>Fixtures</span>
+        <strong><%= stats.fixtures %></strong>
+    </div>
+
+    <div class="stat-card">
+        <span>Played</span>
+        <strong><%= stats.playedFixtures %></strong>
+    </div>
+</section>
+
+<section class="quick-links">
+    <a href="/standings" class="big-link">View Standings →</a>
+    <a href="/fixtures" class="big-link">View Fixtures →</a>
+    <a href="/topstats" class="big-link">View Top Stats →</a>
+</section>
+
+<%- include('partials/footer') %>

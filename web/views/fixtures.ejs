@@ -1,0 +1,48 @@
+<%- include('partials/header') %>
+
+<section class="page-head">
+    <p class="eyebrow">Match Schedule</p>
+    <h1><%= settings?.name || 'Fixtures' %></h1>
+</section>
+
+<% if (!Object.keys(grouped).length) { %>
+    <p>No fixtures found.</p>
+<% } else { %>
+
+    <% Object.keys(grouped).forEach(md => { %>
+
+        <section class="fixture-block">
+           <h2><%= md %></h2>
+
+            <div class="fixture-list">
+                <% grouped[md].forEach(f => { %>
+
+                    <div class="fixture-card">
+                        <div class="teams">
+                            <span><%= f.homeTeam %></span>
+                            <span class="vs">vs</span>
+                            <span><%= f.awayTeam %></span>
+                        </div>
+
+                        <% if (f.status === 'Played') { %>
+                            <div class="score">
+                                <%= f.result?.home ?? 0 %> - <%= f.result?.away ?? 0 %>
+                            </div>
+                        <% } else { %>
+                            <div class="pending">Upcoming</div>
+                        <% } %>
+
+                        <div class="meta">
+                            #<%= f.matchNumber %>
+                        </div>
+                    </div>
+
+                <% }) %>
+            </div>
+        </section>
+
+    <% }) %>
+
+<% } %>
+
+<%- include('partials/footer') %>
