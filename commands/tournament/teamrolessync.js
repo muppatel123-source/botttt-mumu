@@ -1,4 +1,3 @@
-```js
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -243,4 +242,3 @@ function parseColor(color) {
 
     return parseInt(cleaned, 16);
 }
-```
