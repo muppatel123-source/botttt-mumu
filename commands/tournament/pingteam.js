@@ -91,36 +91,19 @@ async function runPing({
         });
     }
 
-    const players = await Player.find({
-        guildId: guild.id,
-        teamId: team._id
-    });
+    const role = guild.roles.cache.find(
+    r => r.name.toLowerCase() === team.name.toLowerCase()
+);
 
-    if (!players.length) {
-        return reply({
-            content: '❌ No players found in your team.'
-        });
-    }
-
-    const mentions = players
-        .filter(player => player.discordID)
-        .map(player => `<@${player.discordID}>`);
-
-    if (!mentions.length) {
-        return reply({
-            content: '❌ No linked Discord users found in your team.'
-        });
-    }
-
-    await channel.send({
-        content:
-            `📢 **${team.name}** team ping by <@${user.id}>\n` +
-            mentions.join(' ')
-    });
-
-    cooldowns.set(cooldownKey, now + COOLDOWN);
-
+if (!role) {
     return reply({
-        content: `✅ Pinged **${team.name}**.`
+        content: `❌ Team role for **${team.name}** not found.`
     });
+}
+
+await channel.send({
+    content: `<@&${role.id}>`
+});
+
+cooldowns.set(cooldownKey, now + COOLDOWN);
 }
