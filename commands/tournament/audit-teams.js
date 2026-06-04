@@ -86,15 +86,18 @@ async function runAudit({
     ]);
 
     if (!teams.length) {
-        return reply({ content: '📭 No teams found to audit.' });
+        return reply({
+            content: '📭 No teams found to audit.'
+        });
     }
 
     const issues = [];
-    const summary = [];
+    const teamColumns = [[], [], []];
+    let teamIndex = 0;
 
     for (const team of teams) {
-        const roster = players.filter(player =>
-            String(player.teamId) === String(team._id)
+        const roster = players.filter(
+            player => String(player.teamId) === String(team._id)
         );
 
         const captainLinked = team.captainID
@@ -147,10 +150,17 @@ async function runAudit({
             }
         }
 
-        summary.push(`• ${team.name} (${roster.length})`);
+        teamColumns[teamIndex % 3].push(
+            `• ${team.name} (${roster.length})`
+        );
+
+        teamIndex++;
 
         if (teamIssues.length) {
-            issues.push(`• ${team.name} → ${teamIssues.join(', ')}`);
+            issues.push({
+                team: team.name,
+                issues: teamIssues
+            });
         }
     }
 
@@ -158,35 +168,83 @@ async function runAudit({
         player => !player.teamId
     );
 
-    if (playersWithoutTeam.length) {
-        issues.push(
-            `• Free Agents → ${playersWithoutTeam
-                .map(player => player.name)
-                .slice(0, 8)
-                .join(', ')}` +
-            (playersWithoutTeam.length > 8
-                ? ` +${playersWithoutTeam.length - 8} more`
-                : '')
-        );
-    }
+    const noGroupTeams = [];
+    const noLogoTeams = [];
+    const noCaptainTeams = [];
+    const captainMismatchTeams = [];
+    const rosterMismatchTeams = [];
+    const brokenEntries = [];
 
-    const tournamentsWithoutTeams = [];
-
-    for (const tournament of tournaments) {
-        const count = await TournamentTeam.countDocuments({
-            guildId: guild.id,
-            tournamentId: tournament._id,
-            isActive: true
-        });
-
-        if (count === 0) {
-            tournamentsWithoutTeams.push(tournament.tournamentKey);
+    for (const issue of issues) {
+        for (const text of issue.issues) {
+            if (text.startsWith('No group in')) {
+                noGroupTeams.push(issue.team);
+            }
+            else if (text === 'No logo') {
+                noLogoTeams.push(issue.team);
+            }
+            else if (text === 'No captain') {
+                noCaptainTeams.push(issue.team);
+            }
+            else if (text === 'Captain not in roster') {
+                captainMismatchTeams.push(issue.team);
+            }
+            else if (text.startsWith('Roster mismatch')) {
+                rosterMismatchTeams.push(
+                    `${issue.team}`
+                );
+            }
+            else if (text === 'Broken tournament entry') {
+                brokenEntries.push(issue.team);
+            }
         }
     }
 
-    if (tournamentsWithoutTeams.length) {
-        issues.push(
-            `• Empty Tournaments → ${tournamentsWithoutTeams.join(', ')}`
+    const issueLines = [];
+
+    if (noGroupTeams.length) {
+        issueLines.push(
+            `📋 Missing Groups (${noGroupTeams.length})\n${noGroupTeams.join(', ')}`
+        );
+    }
+
+    if (noLogoTeams.length) {
+        issueLines.push(
+            `🖼️ Missing Logos (${noLogoTeams.length})\n${noLogoTeams.join(', ')}`
+        );
+    }
+
+    if (noCaptainTeams.length) {
+        issueLines.push(
+            `👑 Missing Captains (${noCaptainTeams.length})\n${noCaptainTeams.join(', ')}`
+        );
+    }
+
+    if (captainMismatchTeams.length) {
+        issueLines.push(
+            `⚠️ Captain Not In Roster (${captainMismatchTeams.length})\n${captainMismatchTeams.join(', ')}`
+        );
+    }
+
+    if (rosterMismatchTeams.length) {
+        issueLines.push(
+            `🔄 Roster Mismatches (${rosterMismatchTeams.length})\n${rosterMismatchTeams.join(', ')}`
+        );
+    }
+
+    if (brokenEntries.length) {
+        issueLines.push(
+            `💥 Broken Tournament Entries (${brokenEntries.length})\n${brokenEntries.join(', ')}`
+        );
+    }
+
+    if (playersWithoutTeam.length) {
+        issueLines.push(
+            `🆓 Free Agents (${playersWithoutTeam.length})\n` +
+            playersWithoutTeam
+                .map(player => player.name)
+                .slice(0, 10)
+                .join(', ')
         );
     }
 
@@ -209,7 +267,10 @@ async function runAudit({
 
         const remaining =
             Number.isFinite(Number(targetTeams))
-                ? Math.max(0, Number(targetTeams) - registeredTeams)
+                ? Math.max(
+                    0,
+                    Number(targetTeams) - registeredTeams
+                )
                 : '?';
 
         registrationText =
@@ -219,7 +280,11 @@ async function runAudit({
     }
 
     const embed = new EmbedBuilder()
-        .setColor(issues.length ? 0xF39C12 : 0x2ECC71)
+        .setColor(
+            issueLines.length
+                ? 0xF39C12
+                : 0x2ECC71
+        )
         .setTitle('🧾 TEAM AUDIT REPORT')
         .addFields(
             {
@@ -228,19 +293,25 @@ async function runAudit({
                 inline: false
             },
             {
-                name: `👥 Registered Teams (${teams.length})`,
-                value:
-                    summary.slice(0, 20).join('\n') +
-                    (summary.length > 20
-                        ? `\n...and **${summary.length - 20}** more`
-                        : ''),
-                inline: false
+                name: `👥 Teams (${teams.length})`,
+                value: teamColumns[0].join('\n') || '—',
+                inline: true
+            },
+            {
+                name: '\u200b',
+                value: teamColumns[1].join('\n') || '—',
+                inline: true
+            },
+            {
+                name: '\u200b',
+                value: teamColumns[2].join('\n') || '—',
+                inline: true
             },
             {
                 name: '⚠️ Issues',
                 value:
-                    issues.length
-                        ? issues.slice(0, 15).join('\n')
+                    issueLines.length
+                        ? issueLines.join('\n\n')
                         : '✅ No issues found.',
                 inline: false
             }
