@@ -109,11 +109,17 @@ async function runAudit({
 
         const teamIssues = [];
 
-        if (!team.captainID) teamIssues.push('No captain');
-        if (team.captainID && !captainLinked) teamIssues.push('Captain not in roster');
-        if (!team.stadium) teamIssues.push('No stadium');
-        if (!team.logoURL) teamIssues.push('No logo');
-        if (!team.color) teamIssues.push('No color');
+        if (!team.captainID) {
+            teamIssues.push('No captain');
+        }
+
+        if (team.captainID && !captainLinked) {
+            teamIssues.push('Captain not in roster');
+        }
+
+        if (!team.logoURL) {
+            teamIssues.push('No logo');
+        }
 
         for (const entry of activeTournamentEntries) {
             const tournament = entry.tournamentId;
@@ -136,28 +142,31 @@ async function runAudit({
 
             if (tournamentPlayers !== roster.length) {
                 teamIssues.push(
-                    `Roster sync mismatch in ${tournament.tournamentKey} (${tournamentPlayers}/${roster.length})`
+                    `Roster mismatch in ${tournament.tournamentKey} (${tournamentPlayers}/${roster.length})`
                 );
             }
         }
 
-        summary.push(
-            `**${team.name}** — ${roster.length} player(s), ` +
-            `${activeTournamentEntries.length} active tournament(s)`
-        );
+        summary.push(`• ${team.name} (${roster.length})`);
 
         if (teamIssues.length) {
-            issues.push(`**${team.name}:** ${teamIssues.join(', ')}`);
+            issues.push(`• ${team.name} → ${teamIssues.join(', ')}`);
         }
     }
 
-    const playersWithoutTeam = players.filter(player => !player.teamId);
+    const playersWithoutTeam = players.filter(
+        player => !player.teamId
+    );
 
     if (playersWithoutTeam.length) {
         issues.push(
-            `**Unassigned Players:** ` +
-            `${playersWithoutTeam.map(p => p.name).slice(0, 8).join(', ')}` +
-            `${playersWithoutTeam.length > 8 ? ` +${playersWithoutTeam.length - 8} more` : ''}`
+            `• Free Agents → ${playersWithoutTeam
+                .map(player => player.name)
+                .slice(0, 8)
+                .join(', ')}` +
+            (playersWithoutTeam.length > 8
+                ? ` +${playersWithoutTeam.length - 8} more`
+                : '')
         );
     }
 
@@ -177,8 +186,36 @@ async function runAudit({
 
     if (tournamentsWithoutTeams.length) {
         issues.push(
-            `**Tournaments Without Teams:** ${tournamentsWithoutTeams.join(', ')}`
+            `• Empty Tournaments → ${tournamentsWithoutTeams.join(', ')}`
         );
+    }
+
+    const latestTournament = tournaments[0];
+
+    let registrationText = 'No active tournament found';
+
+    if (latestTournament) {
+        const registeredTeams = await TournamentTeam.countDocuments({
+            guildId: guild.id,
+            tournamentId: latestTournament._id,
+            isActive: true
+        });
+
+        const targetTeams =
+            latestTournament.teamCount ||
+            latestTournament.maxTeams ||
+            latestTournament.desiredTeams ||
+            '?';
+
+        const remaining =
+            Number.isFinite(Number(targetTeams))
+                ? Math.max(0, Number(targetTeams) - registeredTeams)
+                : '?';
+
+        registrationText =
+            `🏆 ${latestTournament.name}\n` +
+            `👥 Registered: **${registeredTeams}/${targetTeams}**\n` +
+            `⏳ Remaining: **${remaining}**`;
     }
 
     const embed = new EmbedBuilder()
@@ -186,23 +223,31 @@ async function runAudit({
         .setTitle('🧾 TEAM AUDIT REPORT')
         .addFields(
             {
-                name: 'Summary',
-                value:
-                    summary.slice(0, 15).join('\n') +
-                    (summary.length > 15 ? `\n…and **${summary.length - 15}** more.` : ''),
+                name: '📊 Registration Progress',
+                value: registrationText,
                 inline: false
             },
             {
-                name: 'Issues Found',
+                name: `👥 Registered Teams (${teams.length})`,
+                value:
+                    summary.slice(0, 20).join('\n') +
+                    (summary.length > 20
+                        ? `\n...and **${summary.length - 20}** more`
+                        : ''),
+                inline: false
+            },
+            {
+                name: '⚠️ Issues',
                 value:
                     issues.length
-                        ? issues.slice(0, 15).join('\n') +
-                          (issues.length > 15 ? `\n…and **${issues.length - 15}** more.` : '')
-                        : '✅ No structural issues detected.',
+                        ? issues.slice(0, 15).join('\n')
+                        : '✅ No issues found.',
                 inline: false
             }
         )
         .setTimestamp();
 
-    return reply({ embeds: [embed] });
+    return reply({
+        embeds: [embed]
+    });
 }
