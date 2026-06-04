@@ -151,6 +151,62 @@ async function runAutoFixtures({
     const fixturesToCreate = [];
     let nextMatchNumber = 1;
 
+    // Auto-create groups if groups are enabled but no group assignments exist
+if (groupCount > 0) {
+    const teamsWithoutGroups = tournamentTeams.filter(
+    team => !String(team.groupKey || '').trim()
+);
+
+    if (teamsWithoutGroups.length > 0) {
+        const groupKeys = Array.from(
+            { length: groupCount },
+            (_, i) => String.fromCharCode(65 + i)
+        );
+
+        // Shuffle teams
+        const shuffledTeams = [...tournamentTeams]
+            .sort(() => Math.random() - 0.5);
+
+        // Snake draft distribution
+        let direction = 1;
+        let groupIndex = 0;
+
+        for (const team of shuffledTeams) {
+            const groupKey = groupKeys[groupIndex];
+
+            await TournamentTeam.updateOne(
+                { _id: team._id },
+                {
+                    $set: { groupKey }
+                }
+            );
+
+            groupIndex += direction;
+
+            if (groupIndex >= groupKeys.length) {
+                groupIndex = groupKeys.length - 1;
+                direction = -1;
+            } else if (groupIndex < 0) {
+                groupIndex = 0;
+                direction = 1;
+            }
+        }
+
+        // Reload teams with fresh group assignments
+        tournamentTeams.splice(
+            0,
+            tournamentTeams.length,
+            ...(await TournamentTeam.find({
+                guildId: guild.id,
+                tournamentId: tournament._id,
+                isActive: true
+            })
+                .populate('teamId')
+                .sort({ createdAt: 1 }))
+        );
+    }
+}
+    
     if (groupCount > 0) {
         const groupKeys = Array.from(
             { length: groupCount },
