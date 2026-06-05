@@ -8,6 +8,11 @@ const {
     ComponentType 
 } = require('discord.js');
 
+const { 
+    getGuildPrefix,
+    DEFAULT_PREFIX
+} = require('../../utils/prefixManager');
+
 module.exports = {
     name: 'help',
     aliases: ['h', 'commands'],
@@ -24,14 +29,18 @@ module.exports = {
                 .setDescription('Enter a category or command name for specific help.')),
 
     async execute(message, args) {
-        const prefix = message.client.prefixes.get(message.guild.id) || '.';
-        await this.runHelp(message, args[0], prefix, false);
+        const prefix = await getGuildPrefix(
+            message.guild.id
+        );
+        await this.runHelp(message, args[0], prefix || DEFAULT_PREFIX, false);
     },
 
     async slashExecute(interaction) {
         const query = interaction.options.getString('query');
-        const prefix = interaction.client.prefixes.get(interaction.guild.id) || '.';
-        await this.runHelp(interaction, query, prefix, true);
+        const prefix = await getGuildPrefix(
+            interaction.guild.id
+        );
+        await this.runHelp(interaction, query, prefix || DEFAULT_PREFIX, true);
     },
 
     async runHelp(input, query, prefix, isSlash) {
