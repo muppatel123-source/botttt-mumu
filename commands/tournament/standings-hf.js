@@ -320,18 +320,11 @@ function getFirstGroup(tournament) {
 }
 
 function inferQualificationCount(settings) {
-    if (!settings?.hasKnockout) return 0;
-
-    const groupCount = settings.groupCount || 0;
-    const totalTeams = settings.teamCount || 0;
-
-    if (groupCount <= 1) {
-        if (totalTeams >= 8) return 4;
-        if (totalTeams >= 4) return 2;
-        return 1;
+    if (!settings?.hasKnockout) {
+        return 0;
     }
 
-    return 2;
+    return settings.qualificationSpotsPerGroup || 2;
 }
 
 function sortTeams(teams) {
