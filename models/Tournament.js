@@ -61,6 +61,11 @@ const tournamentSettingsSchema = new mongoose.Schema(
             min: 0
         },
 
+        qualificationSpotsPerGroup: {
+            type: Number,
+            default: 2
+        },
+
         homeAway: {
             type: Boolean,
             default: false
