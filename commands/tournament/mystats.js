@@ -27,7 +27,7 @@ module.exports = {
     name: 'mystats',
     description: 'View your player stats.',
     usage: '.mystats [@user/userId]',
-    aliases: ['statsme', 'playerstats'],
+    aliases: ['statsme', 'playerstats', 'stats', 's'],
 
     data: new SlashCommandBuilder()
         .setName('mystats')
