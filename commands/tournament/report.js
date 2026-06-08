@@ -27,6 +27,7 @@ const { refreshLiveMasterSchedules } = require('./master-schedule');
 const { refreshLiveBracket } = require('./sendbracket');
 
 const FIXTURE_LIMIT = 15;
+const GROUP_FIXTURE_LIMIT = 25;
 
 module.exports = {
     name: 'report',
@@ -110,10 +111,23 @@ async function startReportMenu({
     if (!tournament) tournament = tournaments[0];
 
     let pendingFixtures = await getPendingFixtures(guild.id, tournament._id);
+    let selectedGroup = 'all';
 
     const msg = await reply({
-        embeds: [buildMenuEmbed(tournament, pendingFixtures)],
-        components: buildMenuComponents(tournaments, tournament, pendingFixtures)
+        embeds: [
+    buildMenuEmbed(
+        tournament,
+        pendingFixtures,
+        selectedGroup
+    )
+],
+        components: await buildMenuComponents(
+    tournaments,
+    tournament,
+    pendingFixtures,
+    guild.id,
+    selectedGroup
+)
     });
 
     if (!msg?.createMessageComponentCollector) return;
@@ -148,14 +162,58 @@ async function startReportMenu({
                 }
 
                 tournament = selectedTournament;
-                pendingFixtures = await getPendingFixtures(guild.id, tournament._id);
+                selectedGroup = 'all';
+                pendingFixtures = await getPendingFixtures(
+    guild.id,
+    tournament._id,
+    selectedGroup
+);
 
                 return interaction.update({
-                    embeds: [buildMenuEmbed(tournament, pendingFixtures)],
-                    components: buildMenuComponents(tournaments, tournament, pendingFixtures)
+                    embeds: [
+    buildMenuEmbed(
+        tournament,
+        pendingFixtures,
+        selectedGroup
+    )
+],
+                    components: await buildMenuComponents(
+    tournaments,
+    tournament,
+    pendingFixtures,
+    guild.id,
+    selectedGroup
+)
                 });
             }
 
+            if (interaction.customId === 'report_group') {
+    selectedGroup = interaction.values[0];
+
+    pendingFixtures = await getPendingFixtures(
+        guild.id,
+        tournament._id,
+        selectedGroup
+    );
+
+    return interaction.update({
+        embeds: [
+            buildMenuEmbed(
+                tournament,
+                pendingFixtures,
+                selectedGroup
+            )
+        ],
+        components: await buildMenuComponents(
+            tournaments,
+            tournament,
+            pendingFixtures,
+            guild.id,
+            selectedGroup
+        )
+    });
+}
+            
             if (interaction.customId === 'report_fixture') {
                 const fixtureId = interaction.values[0];
 
@@ -238,11 +296,27 @@ async function startReportMenu({
                     ephemeral: true
                 });
 
-                pendingFixtures = await getPendingFixtures(guild.id, tournament._id);
+                pendingFixtures = await getPendingFixtures(
+    guild.id,
+    tournament._id,
+    selectedGroup
+);
 
                 await msg.edit({
-                    embeds: [buildMenuEmbed(tournament, pendingFixtures)],
-                    components: buildMenuComponents(tournaments, tournament, pendingFixtures)
+                    embeds: [
+    buildMenuEmbed(
+        tournament,
+        pendingFixtures,
+        selectedGroup
+    )
+],
+                    components: await buildMenuComponents(
+    tournaments,
+    tournament,
+    pendingFixtures,
+    guild.id,
+    selectedGroup
+)
                 }).catch(() => null);
             }
         } catch (error) {
@@ -262,22 +336,36 @@ async function startReportMenu({
     });
 }
 
-async function getPendingFixtures(guildId, tournamentId) {
-    return Fixture.find({
+async function getPendingFixtures(
+    guildId,
+    tournamentId,
+    groupKey = null
+) {
+    const query = {
         guildId,
         tournamentId,
         status: { $in: ['Pending', 'Live'] }
-    })
+    };
+
+    if (groupKey && groupKey !== 'all') {
+        query.groupKey = groupKey;
+    }
+
+    return Fixture.find(query)
         .sort({
             scheduledAt: 1,
             matchNumber: 1,
             createdAt: 1
         })
-        .limit(FIXTURE_LIMIT)
+        .limit(groupKey ? GROUP_FIXTURE_LIMIT : FIXTURE_LIMIT)
         .lean();
 }
 
-function buildMenuEmbed(tournament, fixtures) {
+function buildMenuEmbed(
+    tournament,
+    fixtures,
+    selectedGroup = 'all'
+) {
     const fixtureList = fixtures.length
         ? fixtures.map(f =>
             `#${f.matchNumber} — **${f.homeTeam} vs ${f.awayTeam}** (${f.roundLabel || prettyPhase(f.phase)})`
@@ -289,17 +377,23 @@ function buildMenuEmbed(tournament, fixtures) {
         .setTitle('📝 REPORT MATCH')
         .setDescription(
             `${tournament.emoji || '🏆'} Tournament: **${tournament.name}**\n` +
-            `Key: \`${tournament.tournamentKey}\`\n\n` +
-            `Select a tournament, then select a fixture.\n\n` +
+            `Key: \`${tournament.tournamentKey}\`\n` +
+            `Group Filter: **${selectedGroup === 'all' ? 'All Groups' : selectedGroup}**\n\n` +
             fixtureList
         )
         .setFooter({
-            text: `Showing ${fixtures.length}/${FIXTURE_LIMIT} nearest pending fixtures`
+            text: `Showing ${fixtures.length} fixtures`
         })
         .setTimestamp();
 }
 
-function buildMenuComponents(tournaments, selectedTournament, fixtures) {
+async function buildMenuComponents(
+    tournaments,
+    selectedTournament,
+    fixtures,
+    guildId,
+    selectedGroup = 'all'
+) {
     const rows = [];
 
     rows.push(
@@ -318,6 +412,39 @@ function buildMenuComponents(tournaments, selectedTournament, fixtures) {
         )
     );
 
+const groups = (
+    await Fixture.distinct(
+        'groupKey',
+        {
+            guildId,
+            tournamentId: selectedTournament._id,
+            groupKey: { $exists: true, $ne: null }
+        }
+    )
+).sort();
+
+if (groups.length) {
+    rows.push(
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('report_group')
+                .setPlaceholder('Select group')
+                .addOptions([
+                    {
+                        label: 'All Groups',
+                        value: 'all',
+                        default: selectedGroup === 'all'
+                    },
+                    ...groups.map(group => ({
+                        label: group,
+                        value: group,
+                        default: group === selectedGroup
+                    }))
+                ])
+        )
+    );
+}
+    
     if (fixtures.length) {
         rows.push(
             new ActionRowBuilder().addComponents(
