@@ -7,8 +7,11 @@ const {
 const {
     TournamentSettings,
     TournamentPlayer,
-    UserProfile
+    UserProfile,
+    Player
 } = require('../../models/Tournament');
+
+const { updateLiveTopStats } = require('../../utils/updateTopStats');
 
 const { isOrganizer } = require('../../utils/isOrganizer');
 
@@ -125,47 +128,84 @@ async function runRemoveStats({
     });
 
     if (!tournament) {
-        return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
+        return reply({
+            content: `❌ Tournament \`${tournamentKey}\` not found.`
+        });
     }
 
-    const groupedStats = parseRawStatsGrouped(rawText);
-
-    if (!groupedStats.size) {
-        return reply({ content: '❌ Could not parse any stats.' });
-    }
+    const lines = rawText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
 
     let updatedPlayers = 0;
+    let skippedPlayers = 0;
 
     const removedLines = [];
     const skippedLines = [];
 
-    let totals = {
+    const totals = {
         played: 0,
         goals: 0,
         assists: 0,
-        tackles: 0,
         interceptions: 0,
+        tackles: 0,
         saves: 0
     };
 
-    for (const [playerName, statsToRemove] of groupedStats.entries()) {
+    for (const line of lines) {
+        const parsed = parseRawStatLine(line);
+
+        if (!parsed.ok) {
+            skippedPlayers++;
+            skippedLines.push(`Invalid line: ${line}`);
+            continue;
+        }
+
+        const {
+            discordID,
+            goals,
+            assists,
+            interceptions,
+            tackles,
+            saves
+        } = parsed.data;
+
+        const player = await Player.findOne({
+            guildId: guild.id,
+            discordID
+        });
+
+        if (!player) {
+            skippedPlayers++;
+            skippedLines.push(`Player not found: ${discordID}`);
+            continue;
+        }
+
         const tournamentPlayer = await TournamentPlayer.findOne({
             guildId: guild.id,
             tournamentId: tournament._id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(playerName)}$`, 'i')
-            },
+            playerId: player._id,
             isActive: true
         });
 
         if (!tournamentPlayer) {
-            skippedLines.push(`• Player not found: **${playerName}**`);
+            skippedPlayers++;
+            skippedLines.push(
+                `${player.name} is not active in ${tournament.tournamentKey}`
+            );
             continue;
         }
 
-        const actuallyRemoved = subtractStatsObject(
+        const removed = subtractStatsObject(
             tournamentPlayer.stats,
-            statsToRemove,
+            {
+                goals,
+                assists,
+                interceptions,
+                tackles,
+                saves
+            },
             true
         );
 
@@ -173,23 +213,38 @@ async function runRemoveStats({
 
         await subtractFromUserProfile({
             guildId: guild.id,
-            discordID: tournamentPlayer.discordID,
-            statsToRemove
+            discordID,
+            statsToRemove: {
+                goals,
+                assists,
+                interceptions,
+                tackles,
+                saves
+            }
         });
 
         updatedPlayers++;
 
-        totals.played += actuallyRemoved.played;
-        totals.goals += actuallyRemoved.goals;
-        totals.assists += actuallyRemoved.assists;
-        totals.tackles += actuallyRemoved.tackles;
-        totals.interceptions += actuallyRemoved.interceptions;
-        totals.saves += actuallyRemoved.saves;
+        totals.played += removed.played;
+        totals.goals += removed.goals;
+        totals.assists += removed.assists;
+        totals.interceptions += removed.interceptions;
+        totals.tackles += removed.tackles;
+        totals.saves += removed.saves;
 
         removedLines.push(
-            `**${tournamentPlayer.name}**: ` +
-            buildRemovedText(actuallyRemoved)
+            `${player.name}: ${buildRemovedText(removed)}`
         );
+    }
+
+    await updateLiveTopStats(
+        global.client || guild.client,
+        guild.id,
+        tournament.tournamentKey
+    ).catch(console.error);
+
+    if (global.io) {
+        global.io.emit('update');
     }
 
     const embed = new EmbedBuilder()
@@ -198,39 +253,44 @@ async function runRemoveStats({
         .setDescription(
             `${tournament.emoji || '🏆'} Tournament: **${tournament.name}**\n` +
             `Key: \`${tournament.tournamentKey}\`\n\n` +
-            `Updated players: **${updatedPlayers}**`
+            `Updated Players: **${updatedPlayers}**\n` +
+            `Skipped: **${skippedPlayers}**`
         )
         .addFields(
             {
-                name: 'Removed Stats',
+                name: 'Totals Removed',
+                value:
+                    `⚽ Goals: **${totals.goals}**\n` +
+                    `🎯 Assists: **${totals.assists}**\n` +
+                    `🧠 Interceptions: **${totals.interceptions}**\n` +
+                    `⚔️ Tackles: **${totals.tackles}**\n` +
+                    `🧤 Saves: **${totals.saves}**\n` +
+                    `🏟️ Played: **${totals.played}**`,
+                inline: false
+            },
+            {
+                name: 'Updated Players',
                 value: removedLines.length
-                    ? removedLines.slice(0, 20).join('\n')
+                    ? removedLines.slice(0, 35).join('\n')
                     : 'No stats removed.',
                 inline: false
             },
             {
-                name: 'Totals Removed',
-                value:
-                    `🏟️ Played: **${totals.played}**\n` +
-                    `⚽ Goals: **${totals.goals}**\n` +
-                    `🎯 Assists: **${totals.assists}**\n` +
-                    `⚔️ Tackles: **${totals.tackles}**\n` +
-                    `🧠 Interceptions: **${totals.interceptions}**\n` +
-                    `🧤 Saves: **${totals.saves}**`,
+                name: 'Skipped',
+                value: skippedLines.length
+                    ? skippedLines.slice(0, 20).join('\n')
+                    : 'None',
                 inline: false
             }
         )
+        .setFooter({
+            text: `${tournament.name} • ${tournament.tournamentKey}`
+        })
         .setTimestamp();
 
-    if (skippedLines.length) {
-        embed.addFields({
-            name: 'Skipped',
-            value: skippedLines.slice(0, 10).join('\n'),
-            inline: false
-        });
-    }
-
-    return reply({ embeds: [embed] });
+    return reply({
+        embeds: [embed]
+    });
 }
 
 async function subtractFromUserProfile({
@@ -238,8 +298,6 @@ async function subtractFromUserProfile({
     discordID,
     statsToRemove
 }) {
-    if (!discordID) return;
-
     const profile = await UserProfile.findOne({
         guildId,
         discordID
@@ -290,52 +348,6 @@ function emptyRemoved() {
     };
 }
 
-function parseRawStatsGrouped(text) {
-    const grouped = new Map();
-
-    const lines = text
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean);
-
-    for (const line of lines) {
-        const parsed = parseLine(line);
-        if (!parsed) continue;
-
-        const existing = grouped.get(parsed.name) || emptyRemoved();
-
-        existing[parsed.type] += parsed.value;
-
-        grouped.set(parsed.name, existing);
-    }
-
-    return grouped;
-}
-
-function parseLine(line) {
-    const patterns = [
-        { type: 'goals', regex: /^(.+?)\s*[-:]\s*(\d+)\s+goals?/i },
-        { type: 'assists', regex: /^(.+?)\s*[-:]\s*(\d+)\s+assists?/i },
-        { type: 'tackles', regex: /^(.+?)\s*[-:]\s*(\d+)\s+tackles?/i },
-        { type: 'interceptions', regex: /^(.+?)\s*[-:]\s*(\d+)\s+interceptions?/i },
-        { type: 'saves', regex: /^(.+?)\s*[-:]\s*(\d+)\s+saves?/i }
-    ];
-
-    for (const pattern of patterns) {
-        const match = line.match(pattern.regex);
-
-        if (!match) continue;
-
-        return {
-            name: match[1].trim(),
-            type: pattern.type,
-            value: Number(match[2])
-        };
-    }
-
-    return null;
-}
-
 function buildRemovedText(stats) {
     const parts = [];
 
@@ -349,9 +361,42 @@ function buildRemovedText(stats) {
     return parts.length ? parts.join(', ') : 'nothing removed';
 }
 
-function escapeRegex(text) {
-    return String(text).replace(
-        /[-\/\\^$*+?.()|[\]{}]/g,
-        '\\$&'
-    );
+function parseRawStatLine(line) {
+    const parts = line.split(',').map(part => part.trim());
+
+    if (parts.length < 6) {
+        return { ok: false };
+    }
+
+    const [
+        rawId,
+        rawGoals,
+        rawAssists,
+        rawInterceptions,
+        rawTackles,
+        rawSaves
+    ] = parts;
+
+    const discordID = rawId.replace(/[<@!>]/g, '');
+
+    if (!/^\d{17,20}$/.test(discordID)) {
+        return { ok: false };
+    }
+
+    return {
+        ok: true,
+        data: {
+            discordID,
+            goals: safeInt(rawGoals),
+            assists: safeInt(rawAssists),
+            interceptions: safeInt(rawInterceptions),
+            tackles: safeInt(rawTackles),
+            saves: safeInt(rawSaves)
+        }
+    };
+}
+
+function safeInt(value) {
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
 }
