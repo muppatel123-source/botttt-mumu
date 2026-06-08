@@ -13,6 +13,11 @@ const {
 
 const { updateLiveTopStats } = require('../../utils/updateTopStats');
 
+const {
+    getDefaultTournament,
+    getTournamentByKey
+} = require('../../utils/getTournament');
+
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -46,12 +51,30 @@ module.exports = {
                 return message.reply('🚫 Unauthorized.');
             }
 
-            if (!args.length) {
-                return message.reply('❓ Usage: `.rs <tournamentKey>` or reply to raw stats with `.rs <tournamentKey>`');
-            }
+            const possibleKey = args[0]?.toLowerCase();
 
-            const tournamentKey = args[0].toLowerCase();
-            let rawText = args.slice(1).join(' ').trim();
+const tournament = await resolveTournament(
+    message.guild.id,
+    possibleKey
+);
+
+if (!tournament) {
+    return message.reply(
+        '❌ Tournament not found. Set a default tournament or use `.rs <tournamentKey>`.'
+    );
+}
+
+const firstArgIsKey =
+    Boolean(
+        possibleKey &&
+        possibleKey === tournament.tournamentKey
+    );
+
+const rawText = await getRawStatsFromMessage(
+    message,
+    args,
+    firstArgIsKey
+);
 
             if (!rawText && message.reference?.messageId) {
                 const replied = await message.channel.messages
@@ -65,12 +88,18 @@ module.exports = {
                 return message.reply('❌ No raw stats text found.');
             }
 
-            return await runRemoveStats({
-                guild: message.guild,
-                tournamentKey,
-                rawText,
-                reply: payload => message.reply(payload)
-            });
+            const waitMsg = await message.reply(
+    '⏳ Removing match stats...'
+);
+
+return await runRemoveStats({
+    guild: message.guild,
+    tournament,
+    rawText,
+    organizerUser: message.author,
+    respondFinal: payload =>
+        waitMsg.edit(payload)
+});
         } catch (error) {
             console.error('removestats prefix error:', error);
             return message.reply('❌ Failed to remove stats.');
@@ -116,22 +145,28 @@ module.exports = {
     }
 };
 
+async function resolveTournament(guildId, key) {
+    if (key) {
+        const found = await getTournamentByKey(guildId, key, {
+            includeCompleted: true
+        });
+
+        if (found) return found;
+    }
+
+    return getDefaultTournament(guildId, {
+        includeCompleted: true
+    });
+}
+
 async function runRemoveStats({
     guild,
-    tournamentKey,
+    tournament,
     rawText,
-    reply
+    organizerUser,
+    respondFinal
 }) {
-    const tournament = await TournamentSettings.findOne({
-        guildId: guild.id,
-        tournamentKey
-    });
 
-    if (!tournament) {
-        return reply({
-            content: `❌ Tournament \`${tournamentKey}\` not found.`
-        });
-    }
 
     const lines = rawText
         .split('\n')
@@ -288,9 +323,61 @@ async function runRemoveStats({
         })
         .setTimestamp();
 
-    return reply({
+await organizerUser
+    .send({
         embeds: [embed]
-    });
+    })
+    .catch(() => null);
+
+return respondFinal({
+    content: '✅ Stats Removed',
+    embeds: []
+});
+}
+
+async function getRawStatsFromMessage(
+    message,
+    args,
+    firstArgIsKey
+) {
+    const replied = message.reference?.messageId
+        ? await message.channel.messages
+            .fetch(message.reference.messageId)
+            .catch(() => null)
+        : null;
+
+    if (replied?.content) {
+        return extractRawStatsBlock(
+            replied.content
+        );
+    }
+
+    const contentArgs = firstArgIsKey
+        ? args.slice(1)
+        : args;
+
+    if (!contentArgs.length) return '';
+
+    return contentArgs.join(' ');
+}
+
+function extractRawStatsBlock(content) {
+    const codeBlockMatch =
+        content.match(
+            /```(?:\w+)?\n?([\s\S]*?)```/
+        );
+
+    if (codeBlockMatch) {
+        return codeBlockMatch[1].trim();
+    }
+
+    return content
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line =>
+            /^\d{17,20}\s*,/.test(line)
+        )
+        .join('\n');
 }
 
 async function subtractFromUserProfile({
