@@ -66,6 +66,11 @@ const tournamentSettingsSchema = new mongoose.Schema(
             default: 2
         },
 
+        uclQualificationSpots: {
+            type: Number,
+            default: 0
+        },
+
         homeAway: {
             type: Boolean,
             default: false
