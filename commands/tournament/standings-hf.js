@@ -20,7 +20,7 @@ const {
 module.exports = {
     name: 'standings-hf',
     description: 'View standings for a tournament or group.',
-    aliases: ['standingshf', 'groupstandings', 'standings'],
+    aliases: ['standingshf', 'groupstandings', 'standings', 'table'],
 
     data: new SlashCommandBuilder()
         .setName('standings-hf')
