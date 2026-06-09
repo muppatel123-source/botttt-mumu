@@ -33,7 +33,7 @@ module.exports = {
     name: 'topstats',
     description: 'View tournament leaderboards for player stats.',
     usage: '.topstats [category]',
-    aliases: ['top-stats', 'leaderstats', 'statleaders'],
+    aliases: ['top-stats', 'leaderstats', 'statleaders', 'lb'],
 
     data: new SlashCommandBuilder()
         .setName('topstats')
