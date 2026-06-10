@@ -71,6 +71,11 @@ const tournamentSettingsSchema = new mongoose.Schema(
             default: 0
         },
 
+        standingsBackground: {
+            type: String,
+            default: null
+        },
+
         homeAway: {
             type: Boolean,
             default: false
@@ -200,6 +205,11 @@ const teamSchema = new mongoose.Schema(
             default: null
         },
 
+        viceCaptainID: {
+            type: String,
+            default: null
+        },
+
         logoURL: {
             type: String,
             default: ''
@@ -269,6 +279,11 @@ const playerSchema = new mongoose.Schema(
         },
 
         isCaptain: {
+            type: Boolean,
+            default: false
+        },
+
+        isViceCaptain: {
             type: Boolean,
             default: false
         },
@@ -409,6 +424,16 @@ const tournamentPlayerSchema = new mongoose.Schema(
         isActive: {
             type: Boolean,
             default: true
+        },
+
+        isCaptain: {
+            type: Boolean,
+            default: false
+        },
+
+        isViceCaptain: {
+            type: Boolean,
+            default: false
         },
 
         stats: {
