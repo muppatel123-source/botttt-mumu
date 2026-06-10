@@ -100,15 +100,26 @@ async function sendTeamMessage({
     content,
     reply
 }) {
-    const team = await Team.findOne({
+    let team = await Team.findOne({
         guildId: guild.id,
         captainID: captainId
     });
 
+    let isViceCaptain = false;
+
+    if (!team) {
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: captainId
+        });
+
+        if (team) isViceCaptain = true;
+    }
+
     if (!team) {
         return reply({
             content:
-                '❌ You are not registered as a team captain.'
+                '❌ You are not registered as a team captain or vice captain.'
         });
     }
 
@@ -127,12 +138,14 @@ async function sendTeamMessage({
     let success = 0;
     let failed = 0;
 
+    const senderRole = isViceCaptain ? 'vice captain' : 'captain';
+
     const dmEmbed = new EmbedBuilder()
         .setColor(0xFEBE10)
         .setTitle(`📢 Team Message — ${team.name}`)
         .setDescription(content)
         .setFooter({
-            text: `Sent by your captain`
+            text: `Sent by your ${senderRole}`
         })
         .setTimestamp();
 

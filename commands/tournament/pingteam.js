@@ -80,14 +80,21 @@ async function runPing({
         }
     }
 
-    const team = await Team.findOne({
+    let team = await Team.findOne({
         guildId: guild.id,
         captainID: user.id
     });
 
     if (!team) {
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: user.id
+        });
+    }
+
+    if (!team) {
         return reply({
-            content: '🚫 Only team captains can use this command.'
+            content: '🚫 Only team captains or vice captains can use this command.'
         });
     }
 

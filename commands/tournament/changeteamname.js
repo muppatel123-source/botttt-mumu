@@ -20,7 +20,7 @@ module.exports = {
     description: 'Change a team name safely.',
     usage: '.ctn <new name> OR .ctn <old name> => <new name>',
     aliases: ['ctn', 'renameteam'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -149,9 +149,9 @@ async function runChangeTeamName({
 
         team = captainPlayer.teamId;
 
-        if (String(team.captainID) !== String(actorId) && !captainPlayer.isCaptain) {
+        if (String(team.captainID) !== String(actorId) && !captainPlayer.isCaptain && !captainPlayer.isViceCaptain && String(team.viceCaptainID) !== String(actorId)) {
             return reply({
-                content: '❌ Only the team captain can rename their team.'
+                content: '❌ Only the team captain or vice captain can rename their team.'
             });
         }
     }

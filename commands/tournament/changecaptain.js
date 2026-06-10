@@ -105,9 +105,17 @@ async function runChangeCaptain({
 
     const team = oldCaptainPlayer.teamId;
 
-    if (String(team.captainID) !== String(actorId) && !oldCaptainPlayer.isCaptain) {
+    const isCaptain =
+        String(team.captainID) === String(actorId) ||
+        oldCaptainPlayer.isCaptain;
+
+    const isViceCaptain =
+        String(team.viceCaptainID) === String(actorId) ||
+        oldCaptainPlayer.isViceCaptain;
+
+    if (!isCaptain && !isViceCaptain) {
         return reply({
-            content: '❌ Only the current team captain can use `.cc`.'
+            content: '❌ Only the team captain or vice captain can use `.cc`.'
         });
     }
 
@@ -134,7 +142,8 @@ async function runChangeCaptain({
         { _id: team._id },
         {
             $set: {
-                captainID: targetUser.id
+                captainID: targetUser.id,
+                viceCaptainID: null
             }
         }
     );
@@ -146,7 +155,8 @@ async function runChangeCaptain({
         },
         {
             $set: {
-                isCaptain: false
+                isCaptain: false,
+                isViceCaptain: false
             }
         }
     );
@@ -158,7 +168,8 @@ async function runChangeCaptain({
         },
         {
             $set: {
-                isCaptain: true
+                isCaptain: true,
+                isViceCaptain: false
             }
         }
     );
@@ -170,7 +181,8 @@ async function runChangeCaptain({
         },
         {
             $set: {
-                isCaptain: false
+                isCaptain: false,
+                isViceCaptain: false
             }
         }
     );
@@ -182,7 +194,8 @@ async function runChangeCaptain({
         },
         {
             $set: {
-                isCaptain: true
+                isCaptain: true,
+                isViceCaptain: false
             }
         }
     );

@@ -282,42 +282,64 @@ async function startReportMenu({
                     });
                 }
 
-                const result = await processFixtureReport({
-                    client,
-                    guild,
-                    tournament,
-                    fixtureId,
-                    homeScore,
-                    awayScore
-                });
+                /*
+                Defer IMMEDIATELY after validation.
+                processFixtureReport does heavy work:
+                  - Fixture DB save
+                  - TournamentTeam stat increments
+                  - updateAllLiveStandings (fetch channels, messages, edit)
+                  - updateLiveTopStats
+                  - refreshLiveMasterSchedules
+                  - refreshLiveBracket
+                This easily exceeds Discord's 3-second interaction deadline.
+                Deferring buys us 15 minutes.
+                */
+                await submitted.deferReply({ ephemeral: true });
 
-                await submitted.reply({
-                    embeds: [result.embed],
-                    ephemeral: true
-                });
+                try {
+                    const result = await processFixtureReport({
+                        client,
+                        guild,
+                        tournament,
+                        fixtureId,
+                        homeScore,
+                        awayScore
+                    });
 
-                pendingFixtures = await getPendingFixtures(
+                    await submitted.editReply({
+                        embeds: [result.embed]
+                    });
+
+                    pendingFixtures = await getPendingFixtures(
     guild.id,
     tournament._id,
     selectedGroup
 );
 
-                await msg.edit({
-                    embeds: [
+                    await msg.edit({
+                        embeds: [
     buildMenuEmbed(
         tournament,
         pendingFixtures,
         selectedGroup
     )
 ],
-                    components: await buildMenuComponents(
+                        components: await buildMenuComponents(
     tournaments,
     tournament,
     pendingFixtures,
     guild.id,
     selectedGroup
 )
-                }).catch(() => null);
+                    }).catch(() => null);
+                } catch (error) {
+                    console.error('report processing error:', error);
+
+                    await submitted.editReply({
+                        content: `❌ Failed to process report: ${error.message || 'Unknown error'}`,
+                        ephemeral: true
+                    }).catch(() => null);
+                }
             }
         } catch (error) {
             console.error('report collector error:', error);

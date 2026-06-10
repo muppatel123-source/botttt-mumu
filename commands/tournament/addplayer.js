@@ -87,13 +87,20 @@ async function runAddPlayer({
         return reply({ content: '❌ Please provide a valid player name.' });
     }
 
-    const team = await Team.findOne({
+    let team = await Team.findOne({
         guildId: guild.id,
         captainID: captainUserId
     });
 
     if (!team) {
-        return reply({ content: '🚫 Only team captains can add players.' });
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: captainUserId
+        });
+    }
+
+    if (!team) {
+        return reply({ content: '🚫 Only team captains or vice captains can add players.' });
     }
 
     if (targetUserId === captainUserId) {

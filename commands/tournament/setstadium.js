@@ -109,7 +109,7 @@ async function runSetStadium({
         return reply({
             content: organizer && teamName
                 ? `❌ Team not found: \`${teamName}\``
-                : '🚫 Only **Team Captains** can set their own stadium. Organizers can use `.setstadium <team name> <stadium name>`.'
+                : '🚫 Only **Team Captains / Vice Captains** can set their own stadium. Organizers can use `.setstadium <team name> <stadium name>`.'
         });
     }
 
@@ -189,10 +189,29 @@ async function resolveTeam({
         });
     }
 
-    return Team.findOne({
+    if (organizer && teamName) {
+        return Team.findOne({
+            guildId: guild.id,
+            name: {
+                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
+            }
+        });
+    }
+
+    // Captain or vice captain
+    let team = await Team.findOne({
         guildId: guild.id,
         captainID: userId
     });
+
+    if (!team) {
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: userId
+        });
+    }
+
+    return team;
 }
 
 function escapeRegex(text) {

@@ -115,7 +115,7 @@ async function runSetLogo({
         return reply({
             content: organizer && teamName
                 ? `❌ Team not found: \`${teamName}\``
-                : '🚫 Only **Team Captains** can set their own logo. Organizers can use `.setlogo <team name> <image link>`.'
+                : '🚫 Only **Team Captains / Vice Captains** can set their own logo. Organizers can use `.setlogo <team name> <image link>`.'
         });
     }
 
@@ -164,10 +164,29 @@ async function resolveTeam({
         });
     }
 
-    return Team.findOne({
+    if (organizer && teamName) {
+        return Team.findOne({
+            guildId: guild.id,
+            name: {
+                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
+            }
+        });
+    }
+
+    // Captain or vice captain
+    let team = await Team.findOne({
         guildId: guild.id,
         captainID: userId
     });
+
+    if (!team) {
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: userId
+        });
+    }
+
+    return team;
 }
 
 function isValidImageUrl(url) {

@@ -99,9 +99,17 @@ async function runClaimPlayer({
 
     const team = captainPlayer.teamId;
 
-    if (String(team.captainID) !== String(actorId) && !captainPlayer.isCaptain) {
+    const isCaptain =
+        String(team.captainID) === String(actorId) ||
+        captainPlayer.isCaptain;
+
+    const isViceCaptain =
+        String(team.viceCaptainID) === String(actorId) ||
+        captainPlayer.isViceCaptain;
+
+    if (!isCaptain && !isViceCaptain) {
         return reply({
-            content: '❌ Only the team captain can claim free agents.'
+            content: '❌ Only the team captain or vice captain can claim free agents.'
         });
     }
 

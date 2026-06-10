@@ -20,7 +20,7 @@ module.exports = {
     description: 'Request a player transfer with approval buttons.',
     usage: '.transfer @user',
     aliases: ['tr'],
-    hidden: true,
+    hidden: false,
     cooldown: 10,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -111,9 +111,17 @@ async function runTransferRequest({
 
     const newTeam = newCaptainPlayer.teamId;
 
-    if (String(newTeam.captainID) !== String(actorId) && !newCaptainPlayer.isCaptain) {
+    const isCaptain =
+        String(newTeam.captainID) === String(actorId) ||
+        newCaptainPlayer.isCaptain;
+
+    const isViceCaptain =
+        String(newTeam.viceCaptainID) === String(actorId) ||
+        newCaptainPlayer.isViceCaptain;
+
+    if (!isCaptain && !isViceCaptain) {
         return reply({
-            content: '❌ Only a team captain can request transfers.'
+            content: '❌ Only a team captain or vice captain can request transfers.'
         });
     }
 
@@ -159,14 +167,18 @@ async function runTransferRequest({
     }
 
     const oldCaptainId = oldTeam.captainID;
+    const oldViceCaptainId = oldTeam.viceCaptainID;
 
-    if (!oldCaptainId) {
+    if (!oldCaptainId && !oldViceCaptainId) {
         return reply({
             content:
-                `❌ **${oldTeam.name}** does not have a captain set.\n` +
+                `❌ **${oldTeam.name}** does not have a captain or vice captain set.\n` +
                 'Ask an organizer to fix the team captain first.'
         });
     }
+
+    // Use captain for pings, but allow vice captain to approve too
+    const oldTeamApprover = oldCaptainId || oldViceCaptainId;
 
     const state = {
         playerAccepted: false,
@@ -179,14 +191,15 @@ async function runTransferRequest({
         targetUser,
         oldTeam,
         newTeam,
-        oldCaptainId,
+        oldTeamApprover,
+        oldViceCaptainId,
         state
     });
 
     const buttons = buildButtons(false);
 
     const message = await reply({
-        content: `<@${oldCaptainId}> ${targetUser}`,
+        content: `<@${oldTeamApprover}> ${targetUser}`,
         embeds: [embed],
         components: [buttons]
     });
@@ -203,8 +216,13 @@ async function runTransferRequest({
         try {
             const allowedIds = new Set([
                 String(targetUser.id),
-                String(oldCaptainId)
+                String(oldTeamApprover)
             ]);
+
+            // Also allow old team's vice captain to approve
+            if (oldViceCaptainId) {
+                allowedIds.add(String(oldViceCaptainId));
+            }
 
             if (!allowedIds.has(String(interaction.user.id))) {
                 return interaction.reply({
@@ -221,7 +239,8 @@ async function runTransferRequest({
                     targetUser,
                     oldTeam,
                     newTeam,
-                    oldCaptainId,
+                    oldTeamApprover,
+                    oldViceCaptainId,
                     state,
                     rejectedBy: interaction.user.id
                 });
@@ -240,7 +259,12 @@ async function runTransferRequest({
                     state.playerAccepted = true;
                 }
 
-                if (String(interaction.user.id) === String(oldCaptainId)) {
+                if (String(interaction.user.id) === String(oldTeamApprover)) {
+                    state.oldCaptainAccepted = true;
+                }
+
+                // Old team's vice captain can also approve
+                if (oldViceCaptainId && String(interaction.user.id) === String(oldViceCaptainId)) {
                     state.oldCaptainAccepted = true;
                 }
 
@@ -258,7 +282,8 @@ async function runTransferRequest({
                         targetUser,
                         oldTeam,
                         newTeam,
-                        oldCaptainId,
+                        oldTeamApprover,
+                        oldViceCaptainId,
                         state,
                         updatedTournamentPlayers: result.updatedTournamentPlayers
                     });
@@ -277,7 +302,8 @@ async function runTransferRequest({
                     targetUser,
                     oldTeam,
                     newTeam,
-                    oldCaptainId,
+                    oldTeamApprover,
+                    oldViceCaptainId,
                     state
                 });
 
@@ -306,7 +332,8 @@ async function runTransferRequest({
             targetUser,
             oldTeam,
             newTeam,
-            oldCaptainId,
+            oldTeamApprover,
+            oldViceCaptainId,
             state
         });
 
@@ -332,7 +359,8 @@ async function completeTransfer({
             $set: {
                 teamId: newTeam._id,
                 teamNameSnapshot: newTeam.name,
-                isCaptain: false
+                isCaptain: false,
+                isViceCaptain: false
             }
         }
     );
@@ -370,7 +398,8 @@ async function completeTransfer({
                     teamId: newTeam._id,
                     tournamentTeamId: newTournamentTeam._id,
                     teamNameSnapshot: newTeam.name,
-                    isCaptain: false
+                    isCaptain: false,
+                    isViceCaptain: false
                 }
             }
         );
@@ -388,7 +417,8 @@ function buildTransferEmbed({
     targetUser,
     oldTeam,
     newTeam,
-    oldCaptainId,
+    oldTeamApprover,
+    oldViceCaptainId,
     state,
     rejectedBy,
     updatedTournamentPlayers
@@ -411,13 +441,13 @@ function buildTransferEmbed({
 
     if (status === 'pending') {
         description =
-            `<@${newTeam.captainID}> wants to sign ${targetUser}.\n\n` +
+            `<@${newTeam.captainID || newTeam.viceCaptainID}> wants to sign ${targetUser}.\n\n` +
             `Player: ${targetUser}\n` +
             `From: **${oldTeam.name}**\n` +
             `To: **${newTeam.name}**\n\n` +
             `Required approvals within **75 seconds**:\n` +
             `Player: ${state.playerAccepted ? '✅ Accepted' : '⏳ Waiting'}\n` +
-            `Old Captain <@${oldCaptainId}>: ${state.oldCaptainAccepted ? '✅ Accepted' : '⏳ Waiting'}`;
+            `Old Team <@${oldTeamApprover}>${oldViceCaptainId ? ` / <@${oldViceCaptainId}>` : ''}: ${state.oldCaptainAccepted ? '✅ Accepted' : '⏳ Waiting'}`;
     }
 
     if (status === 'completed') {
