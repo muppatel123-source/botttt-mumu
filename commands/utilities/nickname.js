@@ -1,6 +1,6 @@
 module.exports = {
-  name: 'nick',
-  aliases: ['nickname', 'setnick', 'rename'],
+  name: 'nickname',
+  aliases: ['setnick', 'rename'],
   description: 'Changes the server nickname of a member',
   async execute(message, args) {
     // 1. Permission Check
@@ -11,7 +11,7 @@ module.exports = {
     const query = args[0];
     const newNick = args.slice(1).join(' ');
 
-    if (!query) return message.reply("<a:CAUTION:1486728415015993477> **Usage:** `.nick @user New Name` or `.nick @user reset`.");
+    if (!query) return message.reply("<a:CAUTION:1486728415015993477> **Usage:** `.nickname @user New Name` or `.nickname @user reset`.");
 
     // 2. Pro Search Logic (Mentions, ID, or Name)
     let targetMember = message.mentions.members.first() || 
