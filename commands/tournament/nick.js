@@ -1,55 +1,52 @@
 /**
  * nick.js
  *
- * Change a teammate's server nickname.
- * Captain or vice captain can set any teammate's nickname.
+ * Change a player's registered name in the database.
+ * Captain or vice captain can rename any teammate.
+ *
+ * Updates:
+ *   - Player.name
+ *   - TournamentPlayer.playerNameSnapshot (across all active tournaments)
  *
  * Usage:
- *   .nick @user New Nickname Here
- *   .nick @user reset              (resets to default)
+ *   .nick @user New Player Name
+ *   .nick Cool Striker => Amazing Striker    (organizer format)
  *
- * Slash: /nick user:@user nickname:New Nickname
- *
- * PERMISSION CHECK:
- *   1. Actor must be captain or vice captain of a team
- *   2. Target must be a registered player on the SAME team
- *   3. Actor must have Manage Nicknames permission in the server
- *      (or the bot does — bot needs it regardless)
- *
- * BOT REQUIRES: ManageNicknames permission
+ * Slash: /playernick user:@user name:New Name
  */
 
 const {
     SlashCommandBuilder,
-    PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
 const {
-    Team,
-    Player
+    Player,
+    TournamentPlayer,
+    TournamentSettings
 } = require('../../models/Tournament');
+
+const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
     name: 'nick',
-    description: 'Change a teammate\'s server nickname.',
-    usage: '.nick @user <new nickname>  |  .nick @user reset',
-    aliases: ['nickname', 'setnick', 'teamnick'],
+    description: 'Change a player\'s registered name.',
+    usage: '.nick @user <new name>',
+    aliases: ['playernick', 'pname', 'renameplayer'],
     hidden: true,
     cooldown: 5,
-    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
-        .setName('teamnick')
-        .setDescription('Change a teammate\'s server nickname')
+        .setName('playernick')
+        .setDescription('Change a player\'s registered name')
         .addUserOption(opt =>
             opt.setName('user')
                 .setDescription('Teammate to rename')
                 .setRequired(true)
         )
         .addStringOption(opt =>
-            opt.setName('nickname')
-                .setDescription('New nickname, or "reset" to clear')
+            opt.setName('name')
+                .setDescription('New player name')
                 .setRequired(true)
         ),
 
@@ -63,24 +60,28 @@ module.exports = {
 
             if (!target) {
                 return message.reply(
-                    '❓ Usage: `.nick @user <new nickname>` or `.nick @user reset`'
+                    '❓ Usage: `.nick @user <new name>`'
                 );
             }
 
-            // Get nickname from args after the mention
-            const mentionRegex = /<@!?\d+>/;
-            const afterMention = message.content.replace(mentionRegex, '').trim();
-            const cleanArgs = afterMention.split(/\s+/);
-            // Remove the command name (.nick)
-            const nickParts = cleanArgs.filter(
-                arg => !arg.startsWith('.') && !arg.startsWith('<@')
+            // Get new name from args after the mention
+            const cleanContent = message.content.replace(/<@!?\d+>/g, '').trim();
+            const parts = cleanContent.split(/\s+/);
+            const nameParts = parts.filter(
+                arg => !arg.startsWith('.')
             );
+            const newName = nameParts.join(' ').trim();
 
-            const nickname = nickParts.join(' ').trim();
-
-            if (!nickname) {
+            if (!newName || newName.length < 2) {
                 return message.reply(
-                    '❓ Usage: `.nick @user <new nickname>` or `.nick @user reset`'
+                    '❓ Usage: `.nick @user <new name>`\n' +
+                    'Name must be at least 2 characters.'
+                );
+            }
+
+            if (newName.length > 40) {
+                return message.reply(
+                    '❌ Player name is too long. Keep it under 40 characters.'
                 );
             }
 
@@ -88,12 +89,12 @@ module.exports = {
                 guild: message.guild,
                 actorId: message.author.id,
                 targetUser: target,
-                nickname,
+                newName,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
             console.error('nick prefix error:', error);
-            return message.reply('❌ Failed to change nickname.');
+            return message.reply('❌ Failed to change player name.');
         }
     },
 
@@ -102,24 +103,32 @@ module.exports = {
             await interaction.deferReply({ ephemeral: false });
 
             const target = interaction.options.getUser('user');
-            const nickname = interaction.options.getString('nickname');
+            const newName = interaction.options.getString('name').trim();
+
+            if (!newName || newName.length < 2) {
+                return interaction.editReply('❌ Name must be at least 2 characters.');
+            }
+
+            if (newName.length > 40) {
+                return interaction.editReply('❌ Name is too long. Keep it under 40 characters.');
+            }
 
             return await runNick({
                 guild: interaction.guild,
                 actorId: interaction.user.id,
                 targetUser: target,
-                nickname,
+                newName,
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
             console.error('nick slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
-                return interaction.editReply('❌ Failed to change nickname.');
+                return interaction.editReply('❌ Failed to change player name.');
             }
 
             return interaction.reply({
-                content: '❌ Failed to change nickname.',
+                content: '❌ Failed to change player name.',
                 ephemeral: true
             });
         }
@@ -136,43 +145,22 @@ async function runNick({
     guild,
     actorId,
     targetUser,
-    nickname,
+    newName,
     reply
 }) {
-    // ── FIND ACTOR'S TEAM ──
+    // ── FIND ACTOR ──
     const actorPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: actorId
-    }).populate('teamId');
+    });
 
-    if (!actorPlayer?.teamId) {
-        return reply({
-            content: '❌ You are not linked to any team.'
-        });
-    }
-
-    const team = actorPlayer.teamId;
-
-    // ── CHECK ACTOR IS CAPTAIN OR VICE CAPTAIN ──
-    const isCaptain =
-        String(team.captainID) === String(actorId) ||
-        actorPlayer.isCaptain;
-
-    const isViceCaptain =
-        String(team.viceCaptainID) === String(actorId) ||
-        actorPlayer.isViceCaptain;
-
-    if (!isCaptain && !isViceCaptain) {
-        return reply({
-            content: '❌ Only the team captain or vice captain can change player nicknames.'
-        });
-    }
+    const organizer = await isOrganizer(guild.id, actorId);
 
     // ── FIND TARGET PLAYER ──
     const targetPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: targetUser.id
-    });
+    }).populate('teamId');
 
     if (!targetPlayer) {
         return reply({
@@ -180,81 +168,92 @@ async function runNick({
         });
     }
 
-    // ── CHECK TARGET IS ON SAME TEAM ──
-    if (
-        !targetPlayer.teamId ||
-        String(targetPlayer.teamId) !== String(team._id)
-    ) {
-        return reply({
-            content: `❌ ${targetUser} is not in **${team.name}**. You can only rename your own teammates.`
-        });
-    }
-
-    // ── CAN'T NICKNAME THE CAPTAIN (unless you ARE the captain) ──
-    if (
-        String(team.captainID) === String(targetUser.id) &&
-        String(actorId) !== String(team.captainID)
-    ) {
-        return reply({
-            content: '❌ Only the captain themselves can change their own nickname.'
-        });
-    }
-
-    // ── RESOLVE NICKNAME ──
-    const isReset = nickname.toLowerCase() === 'reset' ||
-                    nickname.toLowerCase() === 'clear' ||
-                    nickname.toLowerCase() === 'remove';
-
-    const newNickname = isReset ? null : nickname.slice(0, 32);
-
-    // ── FETCH MEMBER AND SET NICKNAME ──
-    const member = await guild.members.fetch(targetUser.id).catch(() => null);
-
-    if (!member) {
-        return reply({
-            content: `❌ Could not find ${targetUser} in this server.`
-        });
-    }
-
-    try {
-        await member.setNickname(newNickname);
-    } catch (err) {
-        if (err.code === 50013) {
+    // ── PERMISSION CHECK ──
+    if (!organizer) {
+        if (!actorPlayer?.teamId) {
             return reply({
-                content:
-                    '❌ Missing permission. The bot needs **Manage Nicknames** permission ' +
-                    'to change nicknames. Ask a server admin to grant it.'
+                content: '❌ You are not linked to any team.'
             });
         }
 
-        console.error('nick setNickname error:', err);
+        const team = actorPlayer.teamId;
+
+        // Actor must be captain or vice captain
+        const isCaptain =
+            String(team.captainID) === String(actorId) ||
+            actorPlayer.isCaptain;
+
+        const isViceCaptain =
+            String(team.viceCaptainID) === String(actorId) ||
+            actorPlayer.isViceCaptain;
+
+        if (!isCaptain && !isViceCaptain) {
+            return reply({
+                content: '❌ Only the team captain, vice captain, or an organizer can change player names.'
+            });
+        }
+
+        // Target must be on the same team
+        if (
+            !targetPlayer.teamId ||
+            String(targetPlayer.teamId) !== String(team._id)
+        ) {
+            return reply({
+                content: `❌ ${targetUser} is not in **${team.name}**. You can only rename your own teammates.`
+            });
+        }
+    }
+
+    // ── STORE OLD NAME ──
+    const oldName = targetPlayer.name;
+
+    if (oldName === newName) {
         return reply({
-            content: `❌ Failed to set nickname: ${err.message || 'Unknown error'}`
+            content: '❌ The new name is the same as the current name.'
         });
     }
 
-    // ── CONFIRM ──
-    if (isReset) {
-        const embed = new EmbedBuilder()
-            .setColor(0xE74C3C)
-            .setTitle('🏷️ NICKNAME REMOVED')
-            .setDescription(
-                `Team: **${team.name}**\n` +
-                `Player: ${targetUser}\n` +
-                `Nickname has been reset to default.`
-            )
-            .setTimestamp();
+    // ── UPDATE PLAYER COLLECTION ──
+    await Player.updateOne(
+        { _id: targetPlayer._id },
+        { $set: { name: newName } }
+    );
 
-        return reply({ embeds: [embed] });
+    // ── UPDATE TOURNAMENT PLAYER COLLECTIONS ──
+    const activeTournaments = await TournamentSettings.find({
+        guildId: guild.id,
+        currentPhase: { $ne: 'completed' }
+    }).select('_id').lean();
+
+    const activeTournamentIds = activeTournaments.map(t => t._id);
+
+    let tournamentPlayersUpdated = 0;
+
+    if (activeTournamentIds.length) {
+        const tpResult = await TournamentPlayer.updateMany(
+            {
+                guildId: guild.id,
+                tournamentId: { $in: activeTournamentIds },
+                playerId: targetPlayer._id,
+                isActive: true
+            },
+            {
+                $set: { playerNameSnapshot: newName }
+            }
+        );
+
+        tournamentPlayersUpdated = tpResult.modifiedCount || 0;
     }
 
+    // ── CONFIRM ──
     const embed = new EmbedBuilder()
         .setColor(0x57F287)
-        .setTitle('🏷️ NICKNAME CHANGED')
+        .setTitle('🏷️ PLAYER NAME CHANGED')
         .setDescription(
-            `Team: **${team.name}**\n` +
+            `**${oldName}** → **${newName}**\n\n` +
             `Player: ${targetUser}\n` +
-            `New Nickname: **${newNickname}**`
+            `Changed by: ${organizer ? 'Organizer' : 'Captain/Vice Captain'}\n` +
+            `Tournament records updated: **${tournamentPlayersUpdated}**`
         )
         .setTimestamp();
 
