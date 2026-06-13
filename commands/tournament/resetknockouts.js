@@ -1,3 +1,11 @@
+/**
+ * resetknockouts.js
+ *
+ * Legacy command retired. Use /resettournament or the new knockout flow.
+ *
+ * Aliases: resetko, koreset
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -7,24 +15,37 @@ module.exports = {
     name: 'resetknockouts',
     description: 'Legacy command retired. Use /resettournament or the new knockout flow instead.',
     hidden: true,
+    cooldown: 3,
     aliases: ['resetko', 'koreset'],
 
     data: new SlashCommandBuilder()
         .setName('resetknockouts')
         .setDescription('Legacy command retired. Use /resettournament instead.'),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message) {
         return sendRetiredMessage({
-            reply: (payload) => message.reply(payload)
+            reply: payload => message.reply(payload)
         });
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         return sendRetiredMessage({
-            reply: (payload) => interaction.reply({ ...payload, ephemeral: true })
+            reply: payload => interaction.reply({ ...payload, ephemeral: true })
         });
     }
 };
+
+/* ====================================================
+   RETIRED MESSAGE
+==================================================== */
 
 function sendRetiredMessage({ reply }) {
     const embed = new EmbedBuilder()

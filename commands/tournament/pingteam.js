@@ -1,8 +1,18 @@
-const {
-    SlashCommandBuilder
-} = require('discord.js');
+/**
+ * pingteam.js
+ *
+ * Ping your team's Discord role. Captain/VC only.
+ * Uses a manual 10s cooldown per user per guild.
+ * Sends ONLY the role ping — no confirmation message.
+ *
+ * Usage:  .pingteam
+ * Slash:  /pingteam
+ *
+ * Aliases: pt
+ */
 
-const { Team, Player } = require('../../models/Tournament');
+const { SlashCommandBuilder } = require('discord.js');
+const { Team } = require('../../models/Tournament');
 
 const COOLDOWN = 10 * 1000;
 const cooldowns = new Map();
@@ -12,10 +22,16 @@ module.exports = {
     description: 'Ping your team captain-only.',
     usage: '.pingteam',
     aliases: ['pt'],
+    hidden: false,
+    cooldown: 10,
 
     data: new SlashCommandBuilder()
         .setName('pingteam')
         .setDescription('Ping your team captain-only'),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message) {
         try {
@@ -28,10 +44,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('pingteam prefix error:', error);
+            console.error('[pingteam] prefix error:', error);
             return message.reply('❌ Failed to ping team.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -44,28 +64,25 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('pingteam slash error:', error);
+            console.error('[pingteam] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
-                return interaction.editReply({ content: '❌ Failed to ping team.' });
+                return interaction.editReply('❌ Failed to ping team.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to ping team.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to ping team.', ephemeral: true });
         }
     }
 };
 
-async function runPing({
-    guild,
-    user,
-    channel,
-    reply
-}) {
-    const now = Date.now();
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
+/** Ping the team's Discord role. Only captain/VC can use this. */
+async function runPing({ guild, user, channel, reply }) {
+    /* ── Cooldown check ── */
+    const now = Date.now();
     const cooldownKey = `${guild.id}:${user.id}`;
 
     if (cooldowns.has(cooldownKey)) {
@@ -73,13 +90,11 @@ async function runPing({
 
         if (now < expires) {
             const remaining = Math.ceil((expires - now) / 1000);
-
-            return reply({
-                content: `⏳ You can ping again in **${remaining}s**.`
-            });
+            return reply({ content: `⏳ You can ping again in **${remaining}s**.` });
         }
     }
 
+    /* ── Find team where user is captain or VC ── */
     let team = await Team.findOne({
         guildId: guild.id,
         captainID: user.id
@@ -93,24 +108,20 @@ async function runPing({
     }
 
     if (!team) {
-        return reply({
-            content: '🚫 Only team captains or vice captains can use this command.'
-        });
+        return reply({ content: '🚫 Only team captains or vice captains can use this command.' });
     }
 
+    /* ── Find matching Discord role ── */
     const role = guild.roles.cache.find(
-    r => r.name.toLowerCase() === team.name.toLowerCase()
-);
+        r => r.name.toLowerCase() === team.name.toLowerCase()
+    );
 
-if (!role) {
-    return reply({
-        content: `❌ Team role for **${team.name}** not found.`
-    });
-}
+    if (!role) {
+        return reply({ content: `❌ Team role for **${team.name}** not found.` });
+    }
 
-await channel.send({
-    content: `<@&${role.id}>`
-});
+    /* ── Ping and set cooldown ── */
+    await channel.send({ content: `<@&${role.id}>` });
 
-cooldowns.set(cooldownKey, now + COOLDOWN);
+    cooldowns.set(cooldownKey, now + COOLDOWN);
 }

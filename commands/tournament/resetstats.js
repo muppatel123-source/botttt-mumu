@@ -1,7 +1,18 @@
+/**
+ * resetstats.js
+ *
+ * Reset tournament player stats and/or team standings.
+ * Three modes: players only, teams only, or all.
+ * Requires explicit confirmation to prevent accidents.
+ *
+ * Usage:  .resetstats <tournamentKey> confirm [--players|--teams|--all]
+ * Slash:  /resetstats key:<key> confirm:true [mode]
+ */
+
 const {
+    SlashCommandBuilder,
     EmbedBuilder,
-    PermissionFlagsBits,
-    SlashCommandBuilder
+    PermissionFlagsBits
 } = require('discord.js');
 
 const {
@@ -16,7 +27,7 @@ module.exports = {
     name: 'resetstats',
     description: 'Reset tournament player stats and/or team standings.',
     usage: '.resetstats <tournamentKey> confirm [--players|--teams|--all]',
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -44,6 +55,10 @@ module.exports = {
                 )
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -53,10 +68,7 @@ module.exports = {
             }
 
             const parsed = parsePrefixArgs(args);
-
-            if (!parsed.ok) {
-                return message.reply(parsed.error);
-            }
+            if (!parsed.ok) return message.reply(parsed.error);
 
             const waitMsg = await message.reply('⏳ **Resetting tournament stats...** Please wait.');
 
@@ -68,17 +80,17 @@ module.exports = {
 
             return waitMsg.edit({
                 content: null,
-                embeds: [buildSuccessEmbed({
-                    ...result,
-                    mode: parsed.mode,
-                    actorTag: message.author.tag
-                })]
+                embeds: [buildSuccessEmbed({ ...result, mode: parsed.mode, actorTag: message.author.tag })]
             });
         } catch (error) {
-            console.error('resetstats prefix error:', error);
+            console.error('[resetstats] prefix error:', error);
             return message.reply('❌ **Database Error:** Failed to reset statistics.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -98,10 +110,7 @@ module.exports = {
                 });
             }
 
-            await interaction.reply({
-                content: '⏳ **Resetting tournament stats...** Please wait.',
-                ephemeral: true
-            });
+            await interaction.deferReply({ ephemeral: true });
 
             const result = await runReset({
                 guildId: interaction.guild.id,
@@ -110,7 +119,6 @@ module.exports = {
             });
 
             return interaction.editReply({
-                content: null,
                 embeds: [buildSuccessEmbed({
                     ...result,
                     mode: interaction.options.getString('mode') || 'all',
@@ -118,21 +126,20 @@ module.exports = {
                 })]
             });
         } catch (error) {
-            console.error('resetstats slash error:', error);
+            console.error('[resetstats] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
-                return interaction.editReply({
-                    content: '❌ **Database Error:** Failed to reset statistics.'
-                });
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ **Database Error:** Failed to reset statistics.');
             }
 
-            return interaction.reply({
-                content: '❌ **Database Error:** Failed to reset statistics.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ **Database Error:** Failed to reset statistics.', ephemeral: true });
         }
     }
 };
+
+/* ====================================================
+   PREFIX ARG PARSER
+==================================================== */
 
 function parsePrefixArgs(args) {
     if (!args.length) {
@@ -166,43 +173,28 @@ function parsePrefixArgs(args) {
     if (args.includes('--teams')) mode = 'teams';
     if (args.includes('--all')) mode = 'all';
 
-    return {
-        ok: true,
-        tournamentKey,
-        mode
-    };
+    return { ok: true, tournamentKey, mode };
 }
 
-async function runReset({
-    guildId,
-    tournamentKey,
-    mode
-}) {
-    const tournament = await TournamentSettings.findOne({
-        guildId,
-        tournamentKey
-    });
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/** Reset player stats, team standings, or both for a tournament. */
+async function runReset({ guildId, tournamentKey, mode }) {
+    const tournament = await TournamentSettings.findOne({ guildId, tournamentKey });
 
     if (!tournament) {
         throw new Error(`Tournament not found: ${tournamentKey}`);
     }
 
-    let playerResult = {
-        matchedCount: 0,
-        modifiedCount: 0
-    };
+    let playerResult = { matchedCount: 0, modifiedCount: 0 };
+    let teamResult = { matchedCount: 0, modifiedCount: 0 };
 
-    let teamResult = {
-        matchedCount: 0,
-        modifiedCount: 0
-    };
-
+    /* ── Reset player stats ── */
     if (mode === 'players' || mode === 'all') {
         playerResult = await TournamentPlayer.updateMany(
-            {
-                guildId,
-                tournamentId: tournament._id
-            },
+            { guildId, tournamentId: tournament._id },
             {
                 $set: {
                     'stats.played': 0,
@@ -219,12 +211,10 @@ async function runReset({
         );
     }
 
+    /* ── Reset team standings ── */
     if (mode === 'teams' || mode === 'all') {
         teamResult = await TournamentTeam.updateMany(
-            {
-                guildId,
-                tournamentId: tournament._id
-            },
+            { guildId, tournamentId: tournament._id },
             {
                 $set: {
                     'stats.played': 0,
@@ -248,16 +238,12 @@ async function runReset({
     };
 }
 
-function buildSuccessEmbed({
-    tournament,
-    matchedPlayers,
-    modifiedPlayers,
-    matchedTeams,
-    modifiedTeams,
-    mode,
-    actorTag
-}) {
-    const embed = new EmbedBuilder()
+/* ====================================================
+   EMBED BUILDER
+==================================================== */
+
+function buildSuccessEmbed({ tournament, matchedPlayers, modifiedPlayers, matchedTeams, modifiedTeams, mode, actorTag }) {
+    return new EmbedBuilder()
         .setColor(0xE74C3C)
         .setTitle('🧹 TOURNAMENT STATS RESET')
         .setDescription(
@@ -291,6 +277,4 @@ function buildSuccessEmbed({
         )
         .setFooter({ text: `Action performed by ${actorTag}` })
         .setTimestamp();
-
-    return embed;
 }

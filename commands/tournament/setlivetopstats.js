@@ -1,3 +1,14 @@
+/**
+ * setlivetopstats.js
+ *
+ * Create a live-updating top stats message for a tournament.
+ *
+ * Usage: .setlivetopstats [tournamentKey]
+ * Slash: /setlivetopstats [key]
+ *
+ * Aliases: slts, livetopstats
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -19,7 +30,7 @@ module.exports = {
     description: 'Set live top stats message.',
     usage: '.setlivetopstats [tournamentKey]',
     aliases: ['slts', 'livetopstats'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -31,6 +42,10 @@ module.exports = {
                 .setDescription('Optional tournament key')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -57,10 +72,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setlivetopstats prefix error:', error);
+            console.error('[setlivetopstats] prefix error:', error);
             return message.reply('❌ Failed to create live top stats.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -90,7 +109,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setlivetopstats slash error:', error);
+            console.error('[setlivetopstats] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to create live top stats.');

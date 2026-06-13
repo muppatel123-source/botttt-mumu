@@ -1,3 +1,14 @@
+/**
+ * undo-report.js
+ *
+ * Undo a reported match and reverse tournament stats.
+ * Reverses team standings, player stats, and all-time profiles.
+ *
+ * Usage:  .undo-report [tournamentKey] <matchNumber>
+ * Slash:  /undo-report key:<value> match:<number>
+ * Aliases: undoreport, revertmatch
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -28,7 +39,7 @@ module.exports = {
     description: 'Undo a reported match and reverse tournament stats.',
     usage: '.undo-report [tournamentKey] <matchNumber>',
     aliases: ['undoreport', 'revertmatch'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -45,6 +56,10 @@ module.exports = {
                 .setDescription('Match number')
                 .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -72,10 +87,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('undo-report prefix error:', error);
+            console.error('[undo-report] prefix error:', error);
             return message.reply('❌ Failed to undo report.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -96,9 +115,9 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('undo-report slash error:', error);
+            console.error('[undo-report] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
+            if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to undo report.');
             }
 
@@ -109,6 +128,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   ARG PARSER
+==================================================== */
 
 function parsePrefixArgs(args) {
     let key = null;
@@ -134,6 +157,10 @@ function parsePrefixArgs(args) {
         matchNumber
     };
 }
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runUndo({
     client,
@@ -243,6 +270,8 @@ async function runUndo({
 
     await fixture.save();
 
+    /* ── Refresh live views ── */
+
     await updateAllLiveStandings(client, guild.id).catch(console.error);
 
     await updateLiveTopStats(
@@ -304,6 +333,10 @@ async function runUndo({
     });
 }
 
+/* ====================================================
+   TEAM LOOKUP
+==================================================== */
+
 async function findTournamentTeamEntry({
     fixture,
     tournament,
@@ -350,6 +383,10 @@ async function findTournamentTeamEntry({
         teamNameSnapshot: teamName
     });
 }
+
+/* ====================================================
+   STATS REVERSAL
+==================================================== */
 
 function reverseTeamStats({
     stats,
@@ -484,6 +521,10 @@ function reversePlayerStats(stats, entry) {
         (stats.rc || 0) - safeNumber(entry.rc)
     );
 }
+
+/* ====================================================
+   HELPERS
+==================================================== */
 
 function safeNumber(value) {
     const number = Number(value);

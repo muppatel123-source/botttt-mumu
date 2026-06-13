@@ -35,13 +35,14 @@ const {
 const {
     isOrganizer
 } = require('../../utils/isOrganizer');
+const { getUserFromArgs } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'setvicecaptain',
     description: 'Set the vice captain of your team.',
     usage: '.svc @user [remove]',
     aliases: ['svc', 'setvc', 'vicecaptain'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -81,7 +82,7 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setvicecaptain prefix error:', error);
+            console.error('[setvicecaptain] prefix error:', error);
             return message.reply('❌ Failed to set vice captain.');
         }
     },
@@ -101,7 +102,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setvicecaptain slash error:', error);
+            console.error('[setvicecaptain] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to set vice captain.');
@@ -115,11 +116,9 @@ module.exports = {
     }
 };
 
-/*
-========================================
-CORE LOGIC
-========================================
-*/
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runSetViceCaptain({
     guild,
@@ -331,17 +330,4 @@ async function runSetViceCaptain({
         .setTimestamp();
 
     return reply({ embeds: [embed] });
-}
-
-/*
-========================================
-HELPERS
-========================================
-*/
-
-async function getUserFromArgs(message) {
-    const rawId = message.content.match(/\d{17,20}/)?.[0];
-    if (!rawId) return null;
-
-    return message.client.users.fetch(rawId).catch(() => null);
 }

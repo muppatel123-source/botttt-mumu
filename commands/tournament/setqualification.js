@@ -1,23 +1,32 @@
+/**
+ * setqualification.js
+ *
+ * Set the number of qualification spots per group for a tournament.
+ * Organizer only.
+ *
+ * Usage:  .setqualification <tournamentKey> <spots>
+ * Slash:  /setqualification tournament:<key> spots:<number>
+ *
+ * Aliases: setq, setqualify
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    TournamentSettings
-} = require('../../models/Tournament');
-
-const {
-    isOrganizer
-} = require('../../utils/isOrganizer');
+const { TournamentSettings } = require('../../models/Tournament');
+const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
     name: 'setqualification',
     description: 'Set qualification spots per group.',
     usage: '.setqualification <tournamentKey> <spots>',
     aliases: ['setq', 'setqualify'],
-    hidden: true,
+    hidden: false,
+    cooldown: 3,
+    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
         .setName('setqualification')
@@ -33,79 +42,91 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
-        if (!message.guild) return;
+        try {
+            if (!message.guild) return;
 
-        if (!(await isOrganizer(message.guild.id, message.author.id))) {
-            return message.reply('🚫 Unauthorized.');
+            if (!(await isOrganizer(message.guild.id, message.author.id))) {
+                return message.reply('🚫 Unauthorized.');
+            }
+
+            const tournamentKey = args[0]?.toLowerCase();
+            const spots = Number(args[1]);
+
+            if (!tournamentKey || !spots || spots < 1) {
+                return message.reply(
+                    '❓ Usage: `.setqualification <tournamentKey> <spots>`'
+                );
+            }
+
+            return await runUpdateQualification({
+                guildId: message.guild.id,
+                tournamentKey,
+                spots,
+                reply: payload => message.reply(payload)
+            });
+        } catch (error) {
+            console.error('[setqualification] prefix error:', error);
+            return message.reply('❌ Failed to update qualification spots.');
         }
-
-        const tournamentKey = args[0]?.toLowerCase();
-        const spots = Number(args[1]);
-
-        if (!tournamentKey || !spots || spots < 1) {
-            return message.reply(
-                '❓ Usage: `.setqualification <tournamentKey> <spots>`'
-            );
-        }
-
-        return updateQualification({
-            guildId: message.guild.id,
-            tournamentKey,
-            spots,
-            reply: payload => message.reply(payload)
-        });
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
-        if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
+        try {
+            if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
+                return interaction.reply({
+                    content: '🚫 Unauthorized.',
+                    ephemeral: true
+                });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const tournamentKey = interaction.options.getString('tournament').toLowerCase();
+            const spots = interaction.options.getInteger('spots');
+
+            return await runUpdateQualification({
+                guildId: interaction.guild.id,
+                tournamentKey,
+                spots,
+                reply: payload => interaction.editReply(payload)
+            });
+        } catch (error) {
+            console.error('[setqualification] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to update qualification spots.');
+            }
+
             return interaction.reply({
-                content: '🚫 Unauthorized.',
+                content: '❌ Failed to update qualification spots.',
                 ephemeral: true
             });
         }
-
-        const tournamentKey =
-            interaction.options.getString('tournament').toLowerCase();
-
-        const spots =
-            interaction.options.getInteger('spots');
-
-        return updateQualification({
-            guildId: interaction.guild.id,
-            tournamentKey,
-            spots,
-            reply: payload => interaction.reply(payload)
-        });
     }
 };
 
-async function updateQualification({
-    guildId,
-    tournamentKey,
-    spots,
-    reply
-}) {
-    const tournament =
-        await TournamentSettings.findOneAndUpdate(
-            {
-                guildId,
-                tournamentKey
-            },
-            {
-                $set: {
-                    qualificationSpotsPerGroup: spots
-                }
-            },
-            {
-                new: true
-            }
-        );
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+async function runUpdateQualification({ guildId, tournamentKey, spots, reply }) {
+    const tournament = await TournamentSettings.findOneAndUpdate(
+        { guildId, tournamentKey },
+        { $set: { qualificationSpotsPerGroup: spots } },
+        { new: true }
+    );
 
     if (!tournament) {
-        return reply({
-            content: `❌ Tournament \`${tournamentKey}\` not found.`
-        });
+        return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
     const embed = new EmbedBuilder()
@@ -117,7 +138,5 @@ async function updateQualification({
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }

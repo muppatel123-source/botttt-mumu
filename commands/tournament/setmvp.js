@@ -1,3 +1,10 @@
+/**
+ * setmvp.js
+ *
+ * Add MVP award(s) to player(s). Organizers can reply to a MOTM message.
+ * Updates TournamentPlayer stats, UserProfile all-time stats, and live top stats.
+ * Usage:  .setmvp [tournamentKey] @user OR reply to MOTM message with .sm [tournamentKey]
+ */
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -23,7 +30,7 @@ module.exports = {
     description: 'Add MVP award(s) to player(s).',
     usage: '.setmvp [tournamentKey] @user OR reply to MOTM message with .sm [tournamentKey]',
     aliases: ['sm'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -40,6 +47,11 @@ module.exports = {
                 .setDescription('Mention one or more users')
                 .setRequired(false)
         ),
+
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -83,10 +95,15 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setmvp prefix error:', error);
+            console.error('[setmvp] prefix error:', error);
             return message.reply('❌ Failed to add MVP(s).');
         }
     },
+
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -124,7 +141,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setmvp slash error:', error);
+            console.error('[setmvp] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to add MVP(s).');

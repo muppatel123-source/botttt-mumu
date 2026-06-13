@@ -1,3 +1,15 @@
+/**
+ * setserveremoji.js
+ *
+ * Set server-wide emoji for awards.
+ * Updates ServerConfig.emojis.awards fields.
+ *
+ * Usage: .setserveremoji award <type> <emoji>
+ * Slash: /setserveremoji category:award type:<type> emoji:<emoji>
+ *
+ * Aliases: ssemoji
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -22,7 +34,7 @@ module.exports = {
     description: 'Set server-wide award emoji.',
     usage: '.setserveremoji award <type> <emoji>',
     aliases: ['ssemoji'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -67,6 +79,10 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -93,10 +109,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setserveremoji prefix error:', error);
+            console.error('[setserveremoji] prefix error:', error);
             return message.reply('❌ Failed to set emoji.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -117,7 +137,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setserveremoji slash error:', error);
+            console.error('[setserveremoji] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to set emoji.');

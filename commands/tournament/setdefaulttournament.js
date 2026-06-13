@@ -1,3 +1,15 @@
+/**
+ * setdefaulttournament.js
+ *
+ * Set the default tournament for this server.
+ * Updates ServerConfig.defaultTournamentKey.
+ *
+ * Usage: .setdefaulttournament <key>
+ * Slash: /setdefaulttournament key:<key>
+ *
+ * Aliases: sdt, defaulttour
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -16,7 +28,7 @@ module.exports = {
     description: 'Set the default tournament for this server.',
     usage: '.setdefaulttournament <key>',
     aliases: ['sdt', 'defaulttour'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -28,6 +40,10 @@ module.exports = {
                 .setDescription('Tournament key')
                 .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -47,10 +63,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setdefaulttournament prefix error:', error);
+            console.error('[setdefaulttournament] prefix error:', error);
             return message.reply('❌ Failed to set default tournament.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -69,7 +89,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setdefaulttournament slash error:', error);
+            console.error('[setdefaulttournament] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to set default tournament.');
@@ -83,11 +103,11 @@ module.exports = {
     }
 };
 
-async function runSet({
-    guild,
-    tournamentKey,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+async function runSet({ guild, tournamentKey, reply }) {
     const tournament = await TournamentSettings.findOne({
         guildId: guild.id,
         tournamentKey
@@ -100,19 +120,14 @@ async function runSet({
     }
 
     await ServerConfig.findOneAndUpdate(
-        {
-            guildId: guild.id
-        },
+        { guildId: guild.id },
         {
             $set: {
                 guildId: guild.id,
                 defaultTournamentKey: tournamentKey
             }
         },
-        {
-            upsert: true,
-            new: true
-        }
+        { upsert: true, new: true }
     );
 
     const embed = new EmbedBuilder()
@@ -124,7 +139,5 @@ async function runSet({
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }

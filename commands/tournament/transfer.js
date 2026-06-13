@@ -1,3 +1,17 @@
+/**
+ * transfer.js
+ *
+ * Two-party player transfer system.
+ * Captain/VC of the new team initiates. Both the player and the old team's
+ * captain/VC must accept within the timeout window.
+ *
+ * Updates global Player record + all active TournamentPlayer entries.
+ *
+ * Usage:  .transfer @user
+ * Slash:  /transfer user:<user>
+ * Aliases: tr
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -8,12 +22,17 @@ const {
 } = require('discord.js');
 
 const {
-    Team,
     Player,
+    Team,
     TournamentSettings,
     TournamentTeam,
     TournamentPlayer
 } = require('../../models/Tournament');
+
+const { getUserFromArgs } = require('../../utils/stringHelpers');
+
+/** How long both parties have to accept (5 minutes) */
+const TRANSFER_TIMEOUT = 5 * 60 * 1000;
 
 module.exports = {
     name: 'transfer',
@@ -33,13 +52,15 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message) {
         try {
             if (!message.guild) return;
 
-            const target =
-                message.mentions.users.first() ||
-                await getUserFromArgs(message);
+            const target = message.mentions.users.first() || await getUserFromArgs(message);
 
             if (!target) {
                 return message.reply('❌ Usage: `.transfer @user`');
@@ -53,10 +74,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('transfer prefix error:', error);
+            console.error('[transfer] prefix error:', error);
             return message.reply('❌ Failed to start transfer request.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -72,7 +97,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('transfer slash error:', error);
+            console.error('[transfer] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to start transfer request.');
@@ -86,27 +111,27 @@ module.exports = {
     }
 };
 
-async function runTransferRequest({
-    guild,
-    actorId,
-    targetUser,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Validate the transfer request, build the approval UI, and start the collector.
+ */
+async function runTransferRequest({ guild, channel, actorId, targetUser, reply }) {
+    // ── Self-transfer check ──
     if (actorId === targetUser.id) {
-        return reply({
-            content: '❌ You cannot transfer yourself.'
-        });
+        return reply({ content: '❌ You cannot transfer yourself.' });
     }
 
+    // ── Verify actor is captain/VC of a team ──
     const newCaptainPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: actorId
     }).populate('teamId');
 
     if (!newCaptainPlayer?.teamId) {
-        return reply({
-            content: '❌ You are not linked to any team.'
-        });
+        return reply({ content: '❌ You are not linked to any team.' });
     }
 
     const newTeam = newCaptainPlayer.teamId;
@@ -120,38 +145,35 @@ async function runTransferRequest({
         newCaptainPlayer.isViceCaptain;
 
     if (!isCaptain && !isViceCaptain) {
-        return reply({
-            content: '❌ Only a team captain or vice captain can request transfers.'
-        });
+        return reply({ content: '❌ Only a team captain or vice captain can request transfers.' });
     }
 
+    // ── Find target player ──
     const targetPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: targetUser.id
     }).populate('teamId');
 
     if (!targetPlayer) {
-        return reply({
-            content: `❌ ${targetUser} is not registered as a player.`
-        });
+        return reply({ content: `❌ ${targetUser} is not registered as a player.` });
     }
 
     if (!targetPlayer.teamId) {
         return reply({
             content:
                 `❌ ${targetUser} is currently a **FREE AGENT**.\n` +
-                `Use a free-agent signing command instead of transfer.`
+                'Use `.claimplayer @user` to sign them instead.'
         });
     }
 
     const oldTeam = targetPlayer.teamId;
 
+    // ── Same-team check ──
     if (String(oldTeam._id) === String(newTeam._id)) {
-        return reply({
-            content: `❌ ${targetUser} is already in **${newTeam.name}**.`
-        });
+        return reply({ content: `❌ ${targetUser} is already in **${newTeam.name}**.` });
     }
 
+    // ── Cannot transfer a captain ──
     const targetIsCaptain =
         targetPlayer.isCaptain ||
         String(oldTeam.captainID) === String(targetUser.id);
@@ -166,6 +188,7 @@ async function runTransferRequest({
         });
     }
 
+    // ── Determine old team approvers ──
     const oldCaptainId = oldTeam.captainID;
     const oldViceCaptainId = oldTeam.viceCaptainID;
 
@@ -177,9 +200,10 @@ async function runTransferRequest({
         });
     }
 
-    // Use captain for pings, but allow vice captain to approve too
+    // Primary approver is captain; fallback to VC
     const oldTeamApprover = oldCaptainId || oldViceCaptainId;
 
+    // ── Build approval state ──
     const state = {
         playerAccepted: false,
         oldCaptainAccepted: false,
@@ -199,121 +223,36 @@ async function runTransferRequest({
     const buttons = buildButtons(false);
 
     const message = await reply({
-        content: `<@${oldTeamApprover}> ${targetUser}`,
+        content: `<@${oldTeamApprover}> <@${targetUser.id}>`,
         embeds: [embed],
         components: [buttons]
     });
 
-    if (!message?.createMessageComponentCollector) {
-        return null;
-    }
+    if (!message?.createMessageComponentCollector) return null;
 
+    // ── Approval collector ──
     const collector = message.createMessageComponentCollector({
-        time: 75000
+        time: TRANSFER_TIMEOUT
     });
 
-    collector.on('collect', async interaction => {
+    collector.on('collect', async (interaction) => {
         try {
-            const allowedIds = new Set([
-                String(targetUser.id),
-                String(oldTeamApprover)
-            ]);
-
-            // Also allow old team's vice captain to approve
-            if (oldViceCaptainId) {
-                allowedIds.add(String(oldViceCaptainId));
-            }
-
-            if (!allowedIds.has(String(interaction.user.id))) {
-                return interaction.reply({
-                    content: '❌ This transfer approval is not for you.',
-                    ephemeral: true
-                });
-            }
-
-            if (interaction.customId === 'transfer_reject') {
-                state.rejected = true;
-
-                const rejectedEmbed = buildTransferEmbed({
-                    status: 'rejected',
-                    targetUser,
-                    oldTeam,
-                    newTeam,
-                    oldTeamApprover,
-                    oldViceCaptainId,
-                    state,
-                    rejectedBy: interaction.user.id
-                });
-
-                collector.stop('rejected');
-
-                return interaction.update({
-                    content: null,
-                    embeds: [rejectedEmbed],
-                    components: [buildButtons(true)]
-                });
-            }
-
-            if (interaction.customId === 'transfer_accept') {
-                if (String(interaction.user.id) === String(targetUser.id)) {
-                    state.playerAccepted = true;
-                }
-
-                if (String(interaction.user.id) === String(oldTeamApprover)) {
-                    state.oldCaptainAccepted = true;
-                }
-
-                // Old team's vice captain can also approve
-                if (oldViceCaptainId && String(interaction.user.id) === String(oldViceCaptainId)) {
-                    state.oldCaptainAccepted = true;
-                }
-
-                if (state.playerAccepted && state.oldCaptainAccepted) {
-                    const result = await completeTransfer({
-                        guild,
-                        targetPlayer,
-                        targetUser,
-                        oldTeam,
-                        newTeam
-                    });
-
-                    const completedEmbed = buildTransferEmbed({
-                        status: 'completed',
-                        targetUser,
-                        oldTeam,
-                        newTeam,
-                        oldTeamApprover,
-                        oldViceCaptainId,
-                        state,
-                        updatedTournamentPlayers: result.updatedTournamentPlayers
-                    });
-
-                    collector.stop('completed');
-
-                    return interaction.update({
-                        content: null,
-                        embeds: [completedEmbed],
-                        components: [buildButtons(true)]
-                    });
-                }
-
-                const updatedEmbed = buildTransferEmbed({
-                    status: 'pending',
-                    targetUser,
-                    oldTeam,
-                    newTeam,
-                    oldTeamApprover,
-                    oldViceCaptainId,
-                    state
-                });
-
-                return interaction.update({
-                    embeds: [updatedEmbed],
-                    components: [buildButtons(false)]
-                });
-            }
+            await handleTransferInteraction({
+                interaction,
+                targetUser,
+                oldTeamApprover,
+                oldViceCaptainId,
+                oldCaptainId,
+                state,
+                guild,
+                targetPlayer,
+                oldTeam,
+                newTeam,
+                collector,
+                message
+            });
         } catch (error) {
-            console.error('transfer collector error:', error);
+            console.error('[transfer] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -345,16 +284,131 @@ async function runTransferRequest({
     });
 }
 
-async function completeTransfer({
-    guild,
-    targetPlayer,
-    oldTeam,
-    newTeam
+/* ====================================================
+   INTERACTION HANDLER
+==================================================== */
+
+/**
+ * Handle a button press during the transfer approval flow.
+ */
+async function handleTransferInteraction({
+    interaction, targetUser, oldTeamApprover, oldViceCaptainId, oldCaptainId,
+    state, guild, targetPlayer, oldTeam, newTeam, collector, message
 }) {
+    const userId = String(interaction.user.id);
+
+    // ── Permission check ──
+    const allowedIds = new Set([
+        String(targetUser.id),
+        String(oldTeamApprover)
+    ]);
+
+    // Old team's VC can also interact
+    if (oldViceCaptainId) {
+        allowedIds.add(String(oldViceCaptainId));
+    }
+
+    if (!allowedIds.has(userId)) {
+        return interaction.reply({
+            content: '❌ This transfer approval is not for you.',
+            ephemeral: true
+        });
+    }
+
+    // ── Reject ──
+    if (interaction.customId === 'transfer_reject') {
+        state.rejected = true;
+
+        const rejectedEmbed = buildTransferEmbed({
+            status: 'rejected',
+            targetUser,
+            oldTeam,
+            newTeam,
+            oldTeamApprover,
+            oldViceCaptainId,
+            state,
+            rejectedBy: interaction.user.id
+        });
+
+        collector.stop('rejected');
+
+        return interaction.update({
+            content: null,
+            embeds: [rejectedEmbed],
+            components: [buildButtons(true)]
+        });
+    }
+
+    // ── Accept ──
+    if (interaction.customId === 'transfer_accept') {
+        // Player accepts
+        if (userId === String(targetUser.id)) {
+            state.playerAccepted = true;
+        }
+
+        // Old team captain explicitly accepts (not VC impersonating captain)
+        if (oldCaptainId && userId === String(oldCaptainId)) {
+            state.oldCaptainAccepted = true;
+        }
+
+        // Old team VC can approve if no captain exists, or VC is the designated approver
+        if (oldViceCaptainId && userId === String(oldViceCaptainId) && !oldCaptainId) {
+            state.oldCaptainAccepted = true;
+        }
+
+        // ── Both approved → complete transfer ──
+        if (state.playerAccepted && state.oldCaptainAccepted) {
+            const result = await completeTransfer({ guild, targetPlayer, oldTeam, newTeam });
+
+            const completedEmbed = buildTransferEmbed({
+                status: 'completed',
+                targetUser,
+                oldTeam,
+                newTeam,
+                oldTeamApprover,
+                oldViceCaptainId,
+                state,
+                updatedTournamentPlayers: result.updatedTournamentPlayers
+            });
+
+            collector.stop('completed');
+
+            return interaction.update({
+                content: null,
+                embeds: [completedEmbed],
+                components: [buildButtons(true)]
+            });
+        }
+
+        // ── Partial approval → update embed ──
+        const updatedEmbed = buildTransferEmbed({
+            status: 'pending',
+            targetUser,
+            oldTeam,
+            newTeam,
+            oldTeamApprover,
+            oldViceCaptainId,
+            state
+        });
+
+        return interaction.update({
+            embeds: [updatedEmbed],
+            components: [buildButtons(false)]
+        });
+    }
+}
+
+/* ====================================================
+   TRANSFER EXECUTION
+==================================================== */
+
+/**
+ * Execute the transfer: update global Player and all active TournamentPlayer records.
+ */
+async function completeTransfer({ guild, targetPlayer, oldTeam, newTeam }) {
+    // ── Update global player record ──
     await Player.updateOne(
-        {
-            _id: targetPlayer._id
-        },
+        { _id: targetPlayer._id },
         {
             $set: {
                 teamId: newTeam._id,
@@ -365,11 +419,10 @@ async function completeTransfer({
         }
     );
 
+    // ── Update all active tournament entries ──
     const activeTournaments = await TournamentSettings.find({
         guildId: guild.id,
-        currentPhase: {
-            $ne: 'completed'
-        }
+        currentPhase: { $ne: 'completed' }
     });
 
     let updatedTournamentPlayers = 0;
@@ -382,9 +435,7 @@ async function completeTransfer({
             isActive: true
         });
 
-        if (!newTournamentTeam) {
-            continue;
-        }
+        if (!newTournamentTeam) continue;
 
         const result = await TournamentPlayer.updateMany(
             {
@@ -407,21 +458,20 @@ async function completeTransfer({
         updatedTournamentPlayers += result.modifiedCount || 0;
     }
 
-    return {
-        updatedTournamentPlayers
-    };
+    return { updatedTournamentPlayers };
 }
 
+/* ====================================================
+   EMBED BUILDER
+==================================================== */
+
+/**
+ * Build a transfer embed for any status (pending, completed, rejected, expired).
+ */
 function buildTransferEmbed({
-    status,
-    targetUser,
-    oldTeam,
-    newTeam,
-    oldTeamApprover,
-    oldViceCaptainId,
-    state,
-    rejectedBy,
-    updatedTournamentPlayers
+    status, targetUser, oldTeam, newTeam,
+    oldTeamApprover, oldViceCaptainId, state,
+    rejectedBy, updatedTournamentPlayers
 }) {
     const colors = {
         pending: 0xFEE75C,
@@ -445,7 +495,7 @@ function buildTransferEmbed({
             `Player: ${targetUser}\n` +
             `From: **${oldTeam.name}**\n` +
             `To: **${newTeam.name}**\n\n` +
-            `Required approvals within **75 seconds**:\n` +
+            `Required approvals:\n` +
             `Player: ${state.playerAccepted ? '✅ Accepted' : '⏳ Waiting'}\n` +
             `Old Team <@${oldTeamApprover}>${oldViceCaptainId ? ` / <@${oldViceCaptainId}>` : ''}: ${state.oldCaptainAccepted ? '✅ Accepted' : '⏳ Waiting'}`;
     }
@@ -455,8 +505,7 @@ function buildTransferEmbed({
             `${targetUser} has joined **${newTeam.name}**.\n\n` +
             `From: **${oldTeam.name}**\n` +
             `To: **${newTeam.name}**\n` +
-            `Active tournament records updated: **${updatedTournamentPlayers || 0}**\n\n` +
-            `Old stats were not deleted.`;
+            `Active tournament records updated: **${updatedTournamentPlayers || 0}**`;
     }
 
     if (status === 'rejected') {
@@ -470,10 +519,11 @@ function buildTransferEmbed({
 
     if (status === 'expired') {
         description =
-            `Transfer request expired.\n\n` +
+            `Transfer request expired — not all approvals were received in time.\n\n` +
             `Player: ${targetUser}\n` +
             `From: **${oldTeam.name}**\n` +
-            `To: **${newTeam.name}**`;
+            `To: **${newTeam.name}**\n\n` +
+            'Run `.transfer @user` to try again.';
     }
 
     return new EmbedBuilder()
@@ -483,6 +533,14 @@ function buildTransferEmbed({
         .setTimestamp();
 }
 
+/* ====================================================
+   BUTTON BUILDER
+==================================================== */
+
+/**
+ * Build the accept/reject button row.
+ * @param {boolean} disabled - Disable both buttons
+ */
 function buildButtons(disabled) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -499,11 +557,4 @@ function buildButtons(disabled) {
             .setStyle(ButtonStyle.Danger)
             .setDisabled(disabled)
     );
-}
-
-async function getUserFromArgs(message) {
-    const rawId = message.content.match(/\d{17,20}/)?.[0];
-    if (!rawId) return null;
-
-    return message.client.users.fetch(rawId).catch(() => null);
 }

@@ -1,3 +1,15 @@
+/**
+ * settournament.js
+ *
+ * Create or update tournament settings.
+ * Supports league, groups+knockout, mega table+playoffs, and custom formats.
+ *
+ * Usage: .settournament <key> format=league mode=auto name=League_S1 teams=10
+ * Slash: /settournament key:<key> format:<format> mode:<mode> [options...]
+ *
+ * Aliases: tsetup, tournamentsetup
+ */
+
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 
 const { TournamentSettings } = require('../../models/Tournament');
@@ -9,7 +21,7 @@ module.exports = {
     description: 'Create or update tournament settings.',
     usage: '.settournament <key> format=league mode=auto name=League_S1 teams=10',
     aliases: ['tsetup', 'tournamentsetup'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -70,6 +82,10 @@ module.exports = {
         .addRoleOption(opt => opt.setName('captainrole').setDescription('Captain role').setRequired(false))
         .addRoleOption(opt => opt.setName('playerrole').setDescription('Tournament player role').setRequired(false)),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -95,10 +111,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('settournament prefix error:', error);
+            console.error('[settournament] prefix error:', error);
             return message.reply('❌ Failed to save tournament settings.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -147,7 +167,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('settournament slash error:', error);
+            console.error('[settournament] slash error:', error);
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to save tournament settings.');
             }

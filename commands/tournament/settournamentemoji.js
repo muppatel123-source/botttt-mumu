@@ -1,3 +1,15 @@
+/**
+ * settournamentemoji.js
+ *
+ * Set the emoji for a tournament.
+ * Updates TournamentSettings.emoji field.
+ *
+ * Usage: .settournamentemoji <tournamentKey> <emoji>
+ * Slash: /settournamentemoji key:<key> emoji:<emoji>
+ *
+ * Aliases: stemoji, tournamentemoji
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -15,7 +27,7 @@ module.exports = {
     description: 'Set emoji for a tournament.',
     usage: '.settournamentemoji <tournamentKey> <emoji>',
     aliases: ['stemoji', 'tournamentemoji'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -32,6 +44,10 @@ module.exports = {
                 .setDescription('Emoji or emoji code')
                 .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -57,10 +73,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('settournamentemoji prefix error:', error);
+            console.error('[settournamentemoji] prefix error:', error);
             return message.reply('❌ Failed to set tournament emoji.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -80,7 +100,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('settournamentemoji slash error:', error);
+            console.error('[settournamentemoji] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to set tournament emoji.');

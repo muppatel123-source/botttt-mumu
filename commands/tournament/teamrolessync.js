@@ -1,7 +1,18 @@
+/**
+ * teamrolessync.js
+ *
+ * Sync all team Discord roles with database data.
+ * Updates role colors and adds/removes members to match the DB.
+ *
+ * Usage:  .teamrolessync
+ * Slash:  /teamrolessync
+ * Aliases: syncroles, rolesync
+ */
+
 const {
     SlashCommandBuilder,
-    EmbedBuilder,
-    PermissionFlagsBits
+    PermissionFlagsBits,
+    EmbedBuilder
 } = require('discord.js');
 
 const {
@@ -16,12 +27,17 @@ module.exports = {
     description: 'Sync all team roles with database data.',
     usage: '.teamrolessync',
     aliases: ['syncroles', 'rolesync'],
+    hidden: false,
     cooldown: 5,
-    hidden: true,
+    userPermissions: [PermissionFlagsBits.ManageRoles],
 
     data: new SlashCommandBuilder()
         .setName('teamrolessync')
         .setDescription('Sync all team roles with database data'),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message) {
         try {
@@ -39,12 +55,15 @@ module.exports = {
                 guild: message.guild,
                 reply: payload => message.reply(payload)
             });
-
         } catch (error) {
-            console.error('teamrolessync prefix error:', error);
+            console.error('[teamrolessync] prefix error:', error);
             return message.reply('❌ Failed to sync team roles.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -59,20 +78,16 @@ module.exports = {
                 });
             }
 
-            await interaction.reply({
-                content: '🔄 Starting role synchronization...',
-                ephemeral: false
-            });
+            await interaction.deferReply({ ephemeral: false });
 
             return await runSync({
                 guild: interaction.guild,
                 reply: payload => interaction.editReply(payload)
             });
-
         } catch (error) {
-            console.error('teamrolessync slash error:', error);
+            console.error('[teamrolessync] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
+            if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to sync team roles.');
             }
 
@@ -83,6 +98,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runSync({ guild, reply }) {
 
@@ -128,9 +147,7 @@ async function runSync({ guild, reply }) {
 
             let updated = false;
 
-            // -----------------------------
-            // COLOR SYNC
-            // -----------------------------
+            /* ── Color sync ── */
 
             const teamColor = parseColor(team.color);
 
@@ -139,9 +156,7 @@ async function runSync({ guild, reply }) {
                 updated = true;
             }
 
-            // -----------------------------
-            // PLAYER FETCH
-            // -----------------------------
+            /* ── Player fetch ── */
 
             const players = await Player.find({
                 guildId: guild.id,
@@ -154,9 +169,7 @@ async function runSync({ guild, reply }) {
 
             const roleMemberIds = role.members.map(m => m.id);
 
-            // -----------------------------
-            // ADD MISSING PLAYERS
-            // -----------------------------
+            /* ── Add missing players ── */
 
             for (const userId of databaseMemberIds) {
 
@@ -171,9 +184,7 @@ async function runSync({ guild, reply }) {
                 updated = true;
             }
 
-            // -----------------------------
-            // REMOVE EXTRA PLAYERS
-            // -----------------------------
+            /* ── Remove extra players ── */
 
             for (const userId of roleMemberIds) {
 
@@ -208,7 +219,7 @@ async function runSync({ guild, reply }) {
 
         } catch (error) {
 
-            console.error(`Role sync failed for ${team.name}:`, error);
+            console.error('[teamrolessync] role sync failed for %s:', team.name, error);
 
             results.push(`❌ **${team.name}** → Failed to sync`);
         }
@@ -227,6 +238,10 @@ async function runSync({ guild, reply }) {
         embeds: [finalEmbed]
     });
 }
+
+/* ====================================================
+   HELPERS
+==================================================== */
 
 function parseColor(color) {
 

@@ -1,3 +1,15 @@
+/**
+ * setlivestandings.js
+ *
+ * Create a live-updating standings message for a tournament.
+ * Supports group-specific standings.
+ *
+ * Usage: .setlivestandings [tournamentKey] [group]
+ * Slash: /setlivestandings [key] [group]
+ *
+ * Aliases: sls, livestandings
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -22,7 +34,7 @@ module.exports = {
     description: 'Set a live standings message.',
     usage: '.setlivestandings [tournamentKey] [group]',
     aliases: ['sls', 'livestandings'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -39,6 +51,10 @@ module.exports = {
                 .setDescription('Optional group key')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -73,10 +89,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setlivestandings prefix error:', error);
+            console.error('[setlivestandings] prefix error:', error);
             return message.reply('❌ Failed to create live standings.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -110,7 +130,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setlivestandings slash error:', error);
+            console.error('[setlivestandings] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to create live standings.');

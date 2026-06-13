@@ -1,3 +1,16 @@
+/**
+ * setstadium.js
+ *
+ * Set your team stadium, or set any team stadium as organizer.
+ * Captain/VC can set their own team's stadium. Organizers can set any team.
+ *
+ * Usage:  .setstadium <stadium name>
+ *         .setstadium <team name> <stadium name>  (organizer only)
+ * Slash:  /setstadium stadium:<name> [team:<name>]
+ *
+ * Aliases: stadium
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -5,12 +18,15 @@ const {
 
 const { Team } = require('../../models/Tournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'setstadium',
     description: 'Set your team stadium, or set any team stadium as organizer.',
     usage: '.setstadium [team name] <stadium name>',
     aliases: ['stadium'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('setstadium')
@@ -25,6 +41,10 @@ module.exports = {
                 .setDescription('Organizer only: team name')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -56,10 +76,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setstadium prefix error:', error);
+            console.error('[setstadium] prefix error:', error);
             return message.reply('❌ Failed to update stadium.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -76,7 +100,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setstadium slash error:', error);
+            console.error('[setstadium] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to update stadium.');
@@ -90,20 +114,17 @@ module.exports = {
     }
 };
 
-async function runSetStadium({
-    guild,
-    userId,
-    organizer,
-    teamName,
-    stadiumName,
-    reply
-}) {
-    const team = await resolveTeam({
-        guild,
-        userId,
-        organizer,
-        teamName
-    });
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Set a team's stadium.
+ * Captain/VC path: resolve team from user's membership.
+ * Organizer path: resolve team by name argument.
+ */
+async function runSetStadium({ guild, userId, organizer, teamName, stadiumName, reply }) {
+    const team = await resolveTeam({ guild, userId, organizer, teamName });
 
     if (!team) {
         return reply({
@@ -116,15 +137,11 @@ async function runSetStadium({
     const cleanName = String(stadiumName || '').trim();
 
     if (!cleanName || cleanName.length < 2) {
-        return reply({
-            content: '❌ Please provide a valid stadium name.'
-        });
+        return reply({ content: '❌ Please provide a valid stadium name.' });
     }
 
     if (cleanName.length > 80) {
-        return reply({
-            content: '❌ Stadium name is too long. Keep it under 80 characters.'
-        });
+        return reply({ content: '❌ Stadium name is too long. Keep it under 80 characters.' });
     }
 
     team.stadium = cleanName;
@@ -142,6 +159,45 @@ async function runSetStadium({
     return reply({ embeds: [embed] });
 }
 
+/* ====================================================
+   HELPERS
+==================================================== */
+
+/**
+ * Resolve which team to operate on.
+ * Organizer + teamName → find by name.
+ * Otherwise → find by captain/VC membership.
+ */
+async function resolveTeam({ guild, userId, organizer, teamName }) {
+    if (organizer && teamName) {
+        return Team.findOne({
+            guildId: guild.id,
+            name: {
+                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
+            }
+        });
+    }
+
+    // Captain or vice captain
+    let team = await Team.findOne({
+        guildId: guild.id,
+        captainID: userId
+    });
+
+    if (!team) {
+        team = await Team.findOne({
+            guildId: guild.id,
+            viceCaptainID: userId
+        });
+    }
+
+    return team;
+}
+
+/**
+ * For prefix organizer usage, try to match the first N args to a known team name.
+ * Returns { teamName, value } where value is the remaining args.
+ */
 async function parseOrganizerTeamAndValue(guildId, args) {
     const teams = await Team.find({ guildId }).select('name').lean();
 
@@ -172,48 +228,4 @@ async function parseOrganizerTeamAndValue(guildId, args) {
         teamName: null,
         value: args.join(' ').trim()
     };
-}
-
-async function resolveTeam({
-    guild,
-    userId,
-    organizer,
-    teamName
-}) {
-    if (organizer && teamName) {
-        return Team.findOne({
-            guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-            }
-        });
-    }
-
-    if (organizer && teamName) {
-        return Team.findOne({
-            guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-            }
-        });
-    }
-
-    // Captain or vice captain
-    let team = await Team.findOne({
-        guildId: guild.id,
-        captainID: userId
-    });
-
-    if (!team) {
-        team = await Team.findOne({
-            guildId: guild.id,
-            viceCaptainID: userId
-        });
-    }
-
-    return team;
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

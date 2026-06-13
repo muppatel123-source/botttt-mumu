@@ -1,3 +1,14 @@
+/**
+ * startdraw.js
+ *
+ * Start a public tournament draw (group or knockout).
+ * Organizer reveals teams one-by-one with interactive buttons.
+ *
+ * Usage:  .startdraw [tournamentKey] [groups|knockout] [phase]
+ * Slash:  /startdraw key:<value> stage:<value> phase:<value>
+ * Aliases: drawstart, groupdraw
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -20,6 +31,7 @@ const {
     getDrawKey
 } = require('../../utils/drawBoard');
 
+const { prettyPhase } = require('../../utils/displayHelpers');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -27,7 +39,7 @@ module.exports = {
     description: 'Start a public tournament draw.',
     usage: '.startdraw [tournamentKey] [groups|knockout] [phase]',
     aliases: ['drawstart', 'groupdraw'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -54,6 +66,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -75,10 +91,14 @@ module.exports = {
                 reply: payload => message.channel.send(payload)
             });
         } catch (error) {
-            console.error('startdraw prefix error:', error);
+            console.error('[startdraw] prefix error:', error);
             return message.reply('❌ Failed to start draw.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -106,7 +126,7 @@ module.exports = {
 
             return sent;
         } catch (error) {
-            console.error('startdraw slash error:', error);
+            console.error('[startdraw] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to start draw.');
@@ -119,6 +139,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   ARG PARSER
+==================================================== */
 
 function parsePrefixArgs(args) {
     let key = null;
@@ -147,6 +171,10 @@ function parsePrefixArgs(args) {
         phase
     };
 }
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runStartDraw({
     client,
@@ -222,6 +250,10 @@ function inferDefaultStage(tournament) {
     if (tournament.hasKnockout) return 'knockout';
     return 'groups';
 }
+
+/* ====================================================
+   GROUP DRAW
+==================================================== */
 
 async function startGroupDraw({
     client,
@@ -365,7 +397,7 @@ async function startGroupDraw({
                 });
             }
         } catch (error) {
-            console.error('group draw collector error:', error);
+            console.error('[startdraw] group collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -387,6 +419,10 @@ async function startGroupDraw({
 
     return sent;
 }
+
+/* ====================================================
+   KNOCKOUT DRAW
+==================================================== */
 
 async function startKnockoutDraw({
     client,
@@ -524,7 +560,7 @@ async function startKnockoutDraw({
                 });
             }
         } catch (error) {
-            console.error('knockout draw collector error:', error);
+            console.error('[startdraw] knockout collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -546,6 +582,10 @@ async function startKnockoutDraw({
 
     return sent;
 }
+
+/* ====================================================
+   EMBED BUILDERS
+==================================================== */
 
 function buildGroupDrawEmbed(session, lastDrawn = null, lastGroup = null) {
     const groupText = session.groupKeys.map(group => {
@@ -631,6 +671,10 @@ function buildKnockoutDrawEmbed(session, lastDrawn = null) {
         .setTimestamp();
 }
 
+/* ====================================================
+   COMPONENT BUILDERS
+==================================================== */
+
 function buildGroupDrawRow(starterId, session, disabled = false) {
     const isComplete = !session.remainingTeams.length;
 
@@ -667,6 +711,10 @@ function buildKnockoutDrawRow(starterId, session, disabled = false) {
     );
 }
 
+/* ====================================================
+   HELPERS
+==================================================== */
+
 function chooseNextGroup(groups, groupKeys) {
     const sorted = [...groupKeys].sort((a, b) => {
         const aSize = groups[a]?.length || 0;
@@ -695,18 +743,6 @@ function resolveKnockoutPhase(tournament) {
     }
 
     return 'semifinal';
-}
-
-function prettyPhase(phase) {
-    const map = {
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final'
-    };
-
-    return map[phase] || phase || 'Knockout';
 }
 
 function shuffle(array) {

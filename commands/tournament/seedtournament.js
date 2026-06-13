@@ -1,3 +1,20 @@
+/**
+ * seedtournament.js
+ *
+ * Seed fake tournament data for testing.
+ * Creates tournament settings, teams, players, tournament entries,
+ * fixtures, and optional fake results. Uses fake Discord IDs (9xx...)
+ * so there's no collision with real users.
+ *
+ * Prerequisite: No existing TEST teams or tournaments with the same key.
+ * Cleanup: `.cleartournamenttest confirm`
+ *
+ * Usage:  .seedtournament key=test-s1 teams=16 groups=4 playersPerTeam=3 assignGroups=false fixtures=false results=false
+ * Slash:  /seedtournament key:<key> teams:<n> [groups] [players_per_team] ...
+ *
+ * Aliases: seedtour, devseed, testseed
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -15,6 +32,7 @@ const {
 } = require('../../models/Tournament');
 
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { buildRoundRobinFixtures } = require('../../utils/fixtureBuilder');
 
 module.exports = {
     name: 'seedtournament',
@@ -70,6 +88,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -90,10 +112,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('seedtournament prefix error:', error);
+            console.error('[seedtournament] prefix error:', error);
             return message.reply('❌ Failed to seed tournament test data.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -122,7 +148,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('seedtournament slash error:', error);
+            console.error('[seedtournament] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to seed tournament test data.');
@@ -136,6 +162,11 @@ module.exports = {
     }
 };
 
+/* ====================================================
+   PREFIX ARG PARSER
+==================================================== */
+
+/** Parse key=value pairs from prefix args into a config object. */
 function parsePrefixArgs(args) {
     const config = {
         key: 'test-s1',
@@ -179,31 +210,23 @@ function parsePrefixArgs(args) {
         };
     }
 
-    return {
-        ok: true,
-        config
-    };
+    return { ok: true, config };
 }
 
-async function runSeed({
-    guild,
-    config,
-    reply
-}) {
-    const {
-        key,
-        teams,
-        groups,
-        playersPerTeam,
-        assignGroups,
-        fixtures,
-        results
-    } = config;
+/* ====================================================
+   CORE SEED LOGIC
+==================================================== */
 
+/**
+ * Create a full test tournament: settings, teams, players,
+ * tournament entries, optional fixtures and fake results.
+ */
+async function runSeed({ guild, config, reply }) {
+    const { key, teams, groups, playersPerTeam, assignGroups, fixtures, results } = config;
+
+    /* ── Validate config ── */
     if (groups > 0 && groups > teams) {
-        return reply({
-            content: '❌ `groups` cannot be greater than `teams`.'
-        });
+        return reply({ content: '❌ `groups` cannot be greater than `teams`.' });
     }
 
     const existingTournament = await TournamentSettings.findOne({
@@ -232,6 +255,7 @@ async function runSeed({
         });
     }
 
+    /* ── Create tournament settings ── */
     const tournament = await TournamentSettings.create({
         guildId: guild.id,
         tournamentKey: key,
@@ -267,6 +291,7 @@ async function runSeed({
         tournamentPlayerRoleId: ''
     });
 
+    /* ── Create teams and players ── */
     const groupKeys = Array.from(
         { length: groups },
         (_, index) => String.fromCharCode(65 + index)
@@ -309,6 +334,7 @@ async function runSeed({
 
         createdTournamentTeams.push(tournamentTeam);
 
+        /* ── Create players for this team ── */
         for (let p = 0; p < playersPerTeam; p++) {
             const isCaptain = p === 0;
             const fakeUserId = isCaptain
@@ -348,10 +374,7 @@ async function runSeed({
             createdTournamentPlayers.push(tournamentPlayer);
 
             await UserProfile.updateOne(
-                {
-                    guildId: guild.id,
-                    discordID: fakeUserId
-                },
+                { guildId: guild.id, discordID: fakeUserId },
                 {
                     $setOnInsert: {
                         guildId: guild.id,
@@ -362,13 +385,12 @@ async function runSeed({
                         awards: []
                     }
                 },
-                {
-                    upsert: true
-                }
+                { upsert: true }
             );
         }
     }
 
+    /* ── Generate fixtures if requested ── */
     let createdFixtures = [];
 
     if (fixtures) {
@@ -386,10 +408,14 @@ async function runSeed({
             for (const groupKey of groupKeys) {
                 const groupTeams = createdTournamentTeams.filter(entry => entry.groupKey === groupKey);
 
-                const groupFixtures = generateRoundRobinFixtures({
+                const groupFixtures = buildRoundRobinFixtures({
                     guildId: guild.id,
                     tournament,
-                    tournamentTeams: groupTeams,
+                    teams: groupTeams.map(entry => ({
+                        tournamentTeamId: entry._id,
+                        teamId: entry.teamId,
+                        name: entry.teamNameSnapshot
+                    })),
                     phase: 'group',
                     roundPrefix: `Group ${groupKey} Matchday`,
                     groupKey,
@@ -401,10 +427,14 @@ async function runSeed({
                 createdFixtures.push(...groupFixtures);
             }
         } else {
-            createdFixtures = generateRoundRobinFixtures({
+            createdFixtures = buildRoundRobinFixtures({
                 guildId: guild.id,
                 tournament,
-                tournamentTeams: createdTournamentTeams,
+                teams: createdTournamentTeams.map(entry => ({
+                    tournamentTeamId: entry._id,
+                    teamId: entry.teamId,
+                    name: entry.teamNameSnapshot
+                })),
                 phase: 'league',
                 roundPrefix: 'Matchday',
                 groupKey: null,
@@ -417,6 +447,7 @@ async function runSeed({
             await Fixture.insertMany(createdFixtures);
         }
 
+        /* ── Apply fake results if requested ── */
         if (results && createdFixtures.length) {
             await applyFakeResults({
                 guildId: guild.id,
@@ -429,6 +460,7 @@ async function runSeed({
         await tournament.save();
     }
 
+    /* ── Summary embed ── */
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
         .setTitle('🧪 TEST TOURNAMENT SEEDED')
@@ -469,145 +501,15 @@ async function runSeed({
     return reply({ embeds: [embed] });
 }
 
-function generateRoundRobinFixtures({
-    guildId,
-    tournament,
-    tournamentTeams,
-    phase,
-    roundPrefix,
-    groupKey = null,
-    homeAway = false,
-    startMatchNumber = 1
-}) {
-    const teamList = tournamentTeams.map(entry => ({
-        tournamentTeamId: entry._id,
-        teamId: entry.teamId,
-        name: entry.teamNameSnapshot
-    }));
+/* ====================================================
+   FAKE RESULTS ENGINE
+==================================================== */
 
-    if (teamList.length % 2 !== 0) {
-        teamList.push({ name: '__BYE__' });
-    }
-
-    const rounds = [];
-    const totalRounds = teamList.length - 1;
-    const half = teamList.length / 2;
-
-    let rotation = [...teamList];
-
-    for (let round = 0; round < totalRounds; round++) {
-        const pairings = [];
-
-        for (let i = 0; i < half; i++) {
-            const home = rotation[i];
-            const away = rotation[rotation.length - 1 - i];
-
-            if (home.name === '__BYE__' || away.name === '__BYE__') continue;
-
-            pairings.push([home, away]);
-        }
-
-        rounds.push(pairings);
-
-        const fixed = rotation[0];
-        const rest = rotation.slice(1);
-        rest.unshift(rest.pop());
-        rotation = [fixed, ...rest];
-    }
-
-    const fixtures = [];
-    let matchNumber = startMatchNumber;
-
-    for (let roundIndex = 0; roundIndex < rounds.length; roundIndex++) {
-        const roundLabel = `${roundPrefix} ${roundIndex + 1}`;
-
-        for (const [home, away] of rounds[roundIndex]) {
-            fixtures.push(buildFixture({
-                guildId,
-                tournament,
-                phase,
-                roundLabel,
-                groupKey,
-                matchNumber: matchNumber++,
-                home,
-                away
-            }));
-
-            if (homeAway) {
-                fixtures.push(buildFixture({
-                    guildId,
-                    tournament,
-                    phase,
-                    roundLabel: `${roundPrefix} ${roundIndex + 1 + rounds.length}`,
-                    groupKey,
-                    matchNumber: matchNumber++,
-                    home: away,
-                    away: home
-                }));
-            }
-        }
-    }
-
-    return fixtures;
-}
-
-function buildFixture({
-    guildId,
-    tournament,
-    phase,
-    roundLabel,
-    groupKey,
-    matchNumber,
-    home,
-    away
-}) {
-    return {
-        guildId,
-        tournamentId: tournament._id,
-        tournamentKey: tournament.tournamentKey,
-
-        phase,
-        roundLabel,
-        groupKey,
-        leg: 1,
-        matchNumber,
-
-        homeTeam: home.name,
-        awayTeam: away.name,
-        homeTeamId: home.teamId,
-        awayTeamId: away.teamId,
-        homeTournamentTeamId: home.tournamentTeamId,
-        awayTournamentTeamId: away.tournamentTeamId,
-
-        venueType: 'home',
-        venueName: 'Home Ground',
-        scheduledAt: null,
-        status: 'Pending',
-
-        result: {
-            home: null,
-            away: null,
-            extraTimeHome: null,
-            extraTimeAway: null,
-            penaltiesHome: null,
-            penaltiesAway: null,
-            winner: ''
-        },
-
-        aggregateTieKey: null,
-        notes: '',
-        bracket: {
-            advancesToMatchNumber: null,
-            slot: ''
-        }
-    };
-}
-
-async function applyFakeResults({
-    guildId,
-    tournament,
-    fixtures
-}) {
+/**
+ * Randomly mark ~half of the generated fixtures as played.
+ * Updates fixture results, team standings, player stats, and user profiles.
+ */
+async function applyFakeResults({ guildId, tournament, fixtures }) {
     const toPlay = fixtures.slice(0, Math.floor(fixtures.length / 2));
 
     for (const fixtureData of toPlay) {
@@ -643,33 +545,20 @@ async function applyFakeResults({
 
         await fixture.save();
 
+        /* ── Update team standings ── */
         if (fixture.phase === 'group' || fixture.phase === 'league') {
-            await applyTeamResult({
-                guildId,
-                tournament,
-                fixture,
-                homeGoals,
-                awayGoals
-            });
-
-            await applyRandomPlayerStats({
-                guildId,
-                tournament,
-                fixture,
-                homeGoals,
-                awayGoals
-            });
+            await applyTeamResult({ guildId, tournament, fixture, homeGoals, awayGoals });
+            await applyRandomPlayerStats({ guildId, tournament, fixture, homeGoals, awayGoals });
         }
     }
 }
 
-async function applyTeamResult({
-    guildId,
-    tournament,
-    fixture,
-    homeGoals,
-    awayGoals
-}) {
+/* ====================================================
+   TEAM RESULT HELPERS
+==================================================== */
+
+/** Apply a result to both team TournamentTeam standings entries. */
+async function applyTeamResult({ guildId, tournament, fixture, homeGoals, awayGoals }) {
     const homeEntry = await TournamentTeam.findOne({
         guildId,
         tournamentId: tournament._id,
@@ -691,6 +580,7 @@ async function applyTeamResult({
     await awayEntry.save();
 }
 
+/** Increment W/D/L/GF/GA/Pts on a stats object. */
 function addTeamResult(stats, gf, ga, tournament) {
     stats.played = (stats.played || 0) + 1;
     stats.gf = (stats.gf || 0) + gf;
@@ -708,13 +598,12 @@ function addTeamResult(stats, gf, ga, tournament) {
     }
 }
 
-async function applyRandomPlayerStats({
-    guildId,
-    tournament,
-    fixture,
-    homeGoals,
-    awayGoals
-}) {
+/* ====================================================
+   PLAYER STAT HELPERS
+==================================================== */
+
+/** Apply random player stats for a single fixture result. */
+async function applyRandomPlayerStats({ guildId, tournament, fixture, homeGoals, awayGoals }) {
     const homePlayers = await TournamentPlayer.find({
         guildId,
         tournamentId: tournament._id,
@@ -735,6 +624,7 @@ async function applyRandomPlayerStats({
         player.stats.played = (player.stats.played || 0) + 1;
     }
 
+    /* ── Distribute goals and assists ── */
     for (let i = 0; i < homeGoals; i++) {
         const scorer = randomItem(homePlayers);
         const assister = randomItem(homePlayers);
@@ -751,6 +641,7 @@ async function applyRandomPlayerStats({
         if (assister) assister.stats.assists = (assister.stats.assists || 0) + 1;
     }
 
+    /* ── Save each player + update UserProfile ── */
     for (const player of allPlayers) {
         player.stats.tackles = (player.stats.tackles || 0) + randomInt(0, 4);
         player.stats.interceptions = (player.stats.interceptions || 0) + randomInt(0, 3);
@@ -759,10 +650,7 @@ async function applyRandomPlayerStats({
         await player.save();
 
         await UserProfile.updateOne(
-            {
-                guildId,
-                discordID: player.discordID
-            },
+            { guildId, discordID: player.discordID },
             {
                 $inc: {
                     'allTimeStats.played': 1,
@@ -780,39 +668,26 @@ async function applyRandomPlayerStats({
                     awards: []
                 }
             },
-            {
-                upsert: true
-            }
+            { upsert: true }
         );
     }
 }
 
+/* ====================================================
+   SEED HELPERS
+==================================================== */
+
+/** Build an empty team stats object. */
 function emptyTeamStats() {
-    return {
-        played: 0,
-        wins: 0,
-        draws: 0,
-        losses: 0,
-        gf: 0,
-        ga: 0,
-        points: 0
-    };
+    return { played: 0, wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 };
 }
 
+/** Build an empty player stats object. */
 function emptyPlayerStats() {
-    return {
-        played: 0,
-        goals: 0,
-        assists: 0,
-        saves: 0,
-        tackles: 0,
-        interceptions: 0,
-        yc: 0,
-        rc: 0,
-        mvps: 0
-    };
+    return { played: 0, goals: 0, assists: 0, saves: 0, tackles: 0, interceptions: 0, yc: 0, rc: 0, mvps: 0 };
 }
 
+/** Generate realistic team names for seeding. */
 function buildTestTeamNames(count) {
     const base = [
         'Falcons', 'Titans', 'Storm', 'Inferno', 'Velocity', 'Shadow', 'Phoenix', 'Rangers',
@@ -823,39 +698,34 @@ function buildTestTeamNames(count) {
     ];
 
     const names = [];
-
     for (let i = 0; i < count; i++) {
         names.push(base[i] || `Club ${i + 1}`);
     }
-
     return names;
 }
 
+/** Generate a fake Discord ID in the 900 quadrillion range. */
 function generateFakeDiscordId(teamIndex, playerIndex) {
     const base = BigInt('900000000000000000');
     const value = base + BigInt(teamIndex * 100 + playerIndex);
     return value.toString();
 }
 
+/** Pick a random color from a preset palette. */
 function randomColor() {
     const colors = [
-        '#FF5733',
-        '#3498DB',
-        '#2ECC71',
-        '#9B59B6',
-        '#F1C40F',
-        '#E67E22',
-        '#1ABC9C',
-        '#E91E63'
+        '#FF5733', '#3498DB', '#2ECC71', '#9B59B6',
+        '#F1C40F', '#E67E22', '#1ABC9C', '#E91E63'
     ];
-
     return colors[Math.floor(Math.random() * colors.length)];
 }
 
+/** Random integer between min and max inclusive. */
 function randomInt(min, max) {
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+/** Pick a random element from an array. */
 function randomItem(arr) {
     if (!Array.isArray(arr) || !arr.length) return null;
     return arr[Math.floor(Math.random() * arr.length)];

@@ -1,3 +1,16 @@
+/**
+ * setcolor.js
+ *
+ * Set your team color, or set any team color as organizer.
+ * Captain/VC can set their own team's color. Organizers can set any team.
+ *
+ * Usage:  .setcolor <color name OR hex>
+ *         .setcolor <team name> <color>  (organizer only)
+ * Slash:  /setcolor color:<color> [team:<name>]
+ *
+ * Aliases: teamcolor
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -5,32 +18,15 @@ const {
 
 const { Team } = require('../../models/Tournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
-
-const COLOR_MAP = {
-    red: '#FF0000',
-    blue: '#3498DB',
-    green: '#2ECC71',
-    yellow: '#F1C40F',
-    orange: '#E67E22',
-    purple: '#9B59B6',
-    pink: '#E91E63',
-    black: '#111111',
-    white: '#FFFFFF',
-    grey: '#808080',
-    gray: '#808080',
-    cyan: '#00FFFF',
-    teal: '#1ABC9C',
-    gold: '#FFD700',
-    silver: '#C0C0C0',
-    maroon: '#800000',
-    navy: '#000080'
-};
+const { escapeRegex } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'setcolor',
     description: 'Set your team color, or set any team color as organizer.',
     usage: '.setcolor [team name] <color name OR hex>',
     aliases: ['teamcolor'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('setcolor')
@@ -45,6 +41,10 @@ module.exports = {
                 .setDescription('Organizer only: team name')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -74,10 +74,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setcolor prefix error:', error);
+            console.error('[setcolor] prefix error:', error);
             return message.reply('❌ Failed to update team color.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -94,7 +98,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setcolor slash error:', error);
+            console.error('[setcolor] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to update team color.');
@@ -108,20 +112,59 @@ module.exports = {
     }
 };
 
-async function runSetColor({
-    guild,
-    userId,
-    organizer,
-    teamName,
-    colorInput,
-    reply
-}) {
-    const team = await resolveTeam({
-        guild,
-        userId,
-        organizer,
-        teamName
-    });
+/* ====================================================
+   COLOR MAP
+==================================================== */
+
+/** Named color to hex map. */
+const COLOR_MAP = {
+    red: '#FF0000',
+    blue: '#3498DB',
+    green: '#2ECC71',
+    yellow: '#F1C40F',
+    orange: '#E67E22',
+    purple: '#9B59B6',
+    pink: '#E91E63',
+    black: '#111111',
+    white: '#FFFFFF',
+    grey: '#808080',
+    gray: '#808080',
+    cyan: '#00FFFF',
+    teal: '#1ABC9C',
+    gold: '#FFD700',
+    silver: '#C0C0C0',
+    maroon: '#800000',
+    navy: '#000080'
+};
+
+/**
+ * Parse a color input (name or hex) into a hex string.
+ * Returns { ok: true, hex } or { ok: false }.
+ */
+function parseColorInput(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return { ok: false };
+
+    const lower = raw.toLowerCase();
+    if (COLOR_MAP[lower]) return { ok: true, hex: COLOR_MAP[lower] };
+
+    const cleaned = raw.replace('#', '').toUpperCase();
+    if (/^[0-9A-F]{6}$/.test(cleaned)) return { ok: true, hex: `#${cleaned}` };
+
+    return { ok: false };
+}
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Set a team's color.
+ * Captain/VC path: resolve team from user's membership.
+ * Organizer path: resolve team by name argument.
+ */
+async function runSetColor({ guild, userId, organizer, teamName, colorInput, reply }) {
+    const team = await resolveTeam({ guild, userId, organizer, teamName });
 
     if (!team) {
         return reply({
@@ -156,21 +199,16 @@ async function runSetColor({
     return reply({ embeds: [embed] });
 }
 
-async function resolveTeam({
-    guild,
-    userId,
-    organizer,
-    teamName
-}) {
-    if (organizer && teamName) {
-        return Team.findOne({
-            guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-            }
-        });
-    }
+/* ====================================================
+   HELPERS
+==================================================== */
 
+/**
+ * Resolve which team to operate on.
+ * Organizer + teamName → find by name.
+ * Otherwise → find by captain/VC membership.
+ */
+async function resolveTeam({ guild, userId, organizer, teamName }) {
     if (organizer && teamName) {
         return Team.findOne({
             guildId: guild.id,
@@ -194,34 +232,4 @@ async function resolveTeam({
     }
 
     return team;
-}
-
-function parseColorInput(input) {
-    const raw = String(input || '').trim();
-
-    if (!raw) return { ok: false };
-
-    const lower = raw.toLowerCase();
-
-    if (COLOR_MAP[lower]) {
-        return {
-            ok: true,
-            hex: COLOR_MAP[lower]
-        };
-    }
-
-    const cleaned = raw.replace('#', '').toUpperCase();
-
-    if (/^[0-9A-F]{6}$/.test(cleaned)) {
-        return {
-            ok: true,
-            hex: `#${cleaned}`
-        };
-    }
-
-    return { ok: false };
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

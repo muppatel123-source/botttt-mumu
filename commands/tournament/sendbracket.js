@@ -1,3 +1,19 @@
+/**
+ * sendbracket.js
+ *
+ * Send a live-updating knockout bracket embed for a tournament.
+ * The bracket is stored in client.liveSettings and can be refreshed
+ * via the exported refreshLiveBracket function.
+ *
+ * Supports single-leg and two-legged ties, aggregate scoring,
+ * and penalty shootout resolution.
+ *
+ * Usage:  .sendbracket [tournamentKey]
+ * Slash:  /sendbracket [key]
+ *
+ * Aliases: livebracket, postbracket
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -6,11 +22,8 @@ const {
 
 const { Fixture } = require('../../models/Tournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
+const { prettyPhase } = require('../../utils/displayHelpers');
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 
 module.exports = {
     name: 'sendbracket',
@@ -30,6 +43,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -46,15 +63,12 @@ module.exports = {
                 return message.reply('❌ Tournament not found.');
             }
 
-            const embed = await generateBracketEmbed(
-                message.guild.id,
-                tournament.tournamentKey
-            );
+            /* ── Generate & send bracket embed ── */
+            const embed = await generateBracketEmbed(message.guild.id, tournament.tournamentKey);
 
-            const sent = await message.channel.send({
-                embeds: [embed]
-            });
+            const sent = await message.channel.send({ embeds: [embed] });
 
+            /* ── Store live bracket reference ── */
             if (message.client.liveSettings) {
                 message.client.liveSettings.set(
                     getLiveBracketKey(message.guild.id, tournament.tournamentKey),
@@ -68,10 +82,14 @@ module.exports = {
 
             return message.reply('✅ Live bracket message sent and linked.');
         } catch (error) {
-            console.error('sendbracket prefix error:', error);
+            console.error('[sendbracket] prefix error:', error);
             return message.reply('❌ Failed to send bracket.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -95,15 +113,12 @@ module.exports = {
                 });
             }
 
-            const embed = await generateBracketEmbed(
-                interaction.guild.id,
-                tournament.tournamentKey
-            );
+            /* ── Generate & send bracket embed ── */
+            const embed = await generateBracketEmbed(interaction.guild.id, tournament.tournamentKey);
 
-            const sent = await interaction.channel.send({
-                embeds: [embed]
-            });
+            const sent = await interaction.channel.send({ embeds: [embed] });
 
+            /* ── Store live bracket reference ── */
             if (interaction.client.liveSettings) {
                 interaction.client.liveSettings.set(
                     getLiveBracketKey(interaction.guild.id, tournament.tournamentKey),
@@ -120,7 +135,7 @@ module.exports = {
                 ephemeral: true
             });
         } catch (error) {
-            console.error('sendbracket slash error:', error);
+            console.error('[sendbracket] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply('❌ Failed to send bracket.');
@@ -134,6 +149,15 @@ module.exports = {
     }
 };
 
+/* ====================================================
+   BRACKET EMBED GENERATOR
+==================================================== */
+
+/**
+ * Build a bracket embed from knockout fixtures.
+ * Groups fixtures by phase (qualifier → eliminator → QF → SF → Final).
+ * Supports single-leg and two-legged ties with aggregate scoring.
+ */
 async function generateBracketEmbed(guildId, tournamentKey = null) {
     const tournament = tournamentKey
         ? await getTournamentByKey(guildId, tournamentKey)
@@ -146,17 +170,12 @@ async function generateBracketEmbed(guildId, tournamentKey = null) {
             .setDescription('Tournament not found.');
     }
 
+    /* ── Load knockout fixtures ── */
     const fixtures = await Fixture.find({
         guildId,
         tournamentId: tournament._id,
-        phase: {
-            $in: ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final']
-        }
-    }).sort({
-        phase: 1,
-        matchNumber: 1,
-        leg: 1
-    });
+        phase: { $in: ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final'] }
+    }).sort({ phase: 1, matchNumber: 1, leg: 1 });
 
     const embed = new EmbedBuilder()
         .setColor(0xFEBE10)
@@ -174,10 +193,10 @@ async function generateBracketEmbed(guildId, tournamentKey = null) {
             value: 'No knockout rounds available yet.',
             inline: false
         });
-
         return embed;
     }
 
+    /* ── Group by phase ── */
     const grouped = groupFixturesByPhase(fixtures);
     const phaseOrder = ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final'];
 
@@ -195,6 +214,14 @@ async function generateBracketEmbed(guildId, tournamentKey = null) {
     return embed;
 }
 
+/* ====================================================
+   LIVE BRACKET REFRESH
+==================================================== */
+
+/**
+ * Refresh an existing live bracket message.
+ * Called by other commands (e.g. advanceknockout) after bracket changes.
+ */
 async function refreshLiveBracket(client, guildId, tournamentKey) {
     if (!client?.liveSettings) return;
 
@@ -217,20 +244,18 @@ async function refreshLiveBracket(client, guildId, tournamentKey) {
         }
 
         const embed = await generateBracketEmbed(guildId, tournamentKey);
-
-        await message.edit({
-            embeds: [embed]
-        });
+        await message.edit({ embeds: [embed] });
     } catch (error) {
-        console.error('refreshLiveBracket error:', error);
+        console.error('[sendbracket] refreshLiveBracket error:', error);
         client.liveSettings.delete(key);
     }
 }
 
-function getLiveBracketKey(guildId, tournamentKey) {
-    return `live_bracket:${guildId}:${tournamentKey}`;
-}
+/* ====================================================
+   FORMATTING HELPERS
+==================================================== */
 
+/** Group an array of fixtures into an object keyed by phase. */
 function groupFixturesByPhase(fixtures) {
     const grouped = {};
 
@@ -242,6 +267,24 @@ function groupFixturesByPhase(fixtures) {
     return grouped;
 }
 
+/** Group fixtures into ties (by aggregateTieKey, roundLabel, or unique key). */
+function groupFixturesByTie(fixtures) {
+    const map = new Map();
+
+    for (const fixture of fixtures) {
+        const key =
+            fixture.aggregateTieKey ||
+            fixture.roundLabel ||
+            `${fixture.phase}_${fixture.matchNumber}`;
+
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(fixture);
+    }
+
+    return Array.from(map.values());
+}
+
+/** Format all fixtures for one phase into a text block. */
 function formatPhaseBlock(fixtures) {
     const ties = groupFixturesByTie(fixtures);
 
@@ -259,22 +302,7 @@ function formatPhaseBlock(fixtures) {
         .join('\n\n');
 }
 
-function groupFixturesByTie(fixtures) {
-    const map = new Map();
-
-    for (const fixture of fixtures) {
-        const key =
-            fixture.aggregateTieKey ||
-            fixture.roundLabel ||
-            `${fixture.phase}_${fixture.matchNumber}`;
-
-        if (!map.has(key)) map.set(key, []);
-        map.get(key).push(fixture);
-    }
-
-    return Array.from(map.values());
-}
-
+/** Format a single-leg tie. */
 function formatSingleFixture(fixture, tieNumber) {
     const score = displayFixtureScore(fixture);
     const winner = resolveWinnerText(fixture);
@@ -286,6 +314,7 @@ function formatSingleFixture(fixture, tieNumber) {
     );
 }
 
+/** Format a two-legged tie with aggregate score. */
 function formatTwoLegTie(fixtures, tieNumber) {
     const [leg1, leg2] = fixtures;
     const aggregateWinner = resolveAggregateWinner(fixtures);
@@ -298,18 +327,18 @@ function formatTwoLegTie(fixtures, tieNumber) {
     );
 }
 
+/* ====================================================
+   SCORE & WINNER RESOLUTION
+==================================================== */
+
+/** Display the score for a single fixture, or 'vs' if not played. */
 function displayFixtureScore(fixture) {
     if (!fixture || fixture.status !== 'Played') return 'vs';
 
     const home = fixture?.result?.home;
     const away = fixture?.result?.away;
 
-    if (
-        home === null ||
-        away === null ||
-        typeof home === 'undefined' ||
-        typeof away === 'undefined'
-    ) {
+    if (home === null || away === null || typeof home === 'undefined' || typeof away === 'undefined') {
         return 'vs';
     }
 
@@ -318,18 +347,14 @@ function displayFixtureScore(fixture) {
     const pHome = fixture?.result?.penaltiesHome;
     const pAway = fixture?.result?.penaltiesAway;
 
-    if (
-        pHome !== null &&
-        pAway !== null &&
-        typeof pHome !== 'undefined' &&
-        typeof pAway !== 'undefined'
-    ) {
+    if (pHome !== null && pAway !== null && typeof pHome !== 'undefined' && typeof pAway !== 'undefined') {
         text += ` | Pens ${pHome}-${pAway}`;
     }
 
     return text;
 }
 
+/** Resolve the winner text for a single fixture. */
 function resolveWinnerText(fixture) {
     if (fixture?.result?.winner) return fixture.result.winner;
     if (fixture.status !== 'Played') return '';
@@ -349,6 +374,7 @@ function resolveWinnerText(fixture) {
     return '';
 }
 
+/** Resolve the aggregate winner across a two-legged tie. */
 function resolveAggregateWinner(fixtures) {
     if (fixtures.length < 2) return '';
 
@@ -370,15 +396,11 @@ function resolveAggregateWinner(fixtures) {
     if (teamATotal > teamBTotal) return teamA;
     if (teamBTotal > teamATotal) return teamB;
 
+    /* ── Check penalties on leg 2 ── */
     const pHome = leg2.result?.penaltiesHome;
     const pAway = leg2.result?.penaltiesAway;
 
-    if (
-        pHome !== null &&
-        pAway !== null &&
-        typeof pHome !== 'undefined' &&
-        typeof pAway !== 'undefined'
-    ) {
+    if (pHome !== null && pAway !== null && typeof pHome !== 'undefined' && typeof pAway !== 'undefined') {
         if (leg2.homeTeam === teamA) {
             if (pHome > pAway) return teamA;
             if (pAway > pHome) return teamB;
@@ -391,17 +413,18 @@ function resolveAggregateWinner(fixtures) {
     return leg2.result?.winner || '';
 }
 
-function prettyPhase(phase) {
-    const map = {
-        qualifier: '🎟️ Qualifier',
-        eliminator: '⚔️ Eliminator',
-        quarterfinal: '🏁 Quarter Final',
-        semifinal: '🔥 Semi Final',
-        final: '👑 Final'
-    };
+/* ====================================================
+   KEY HELPERS
+==================================================== */
 
-    return map[phase] || phase;
+/** Build the liveSettings key for a bracket. */
+function getLiveBracketKey(guildId, tournamentKey) {
+    return `live_bracket:${guildId}:${tournamentKey}`;
 }
+
+/* ====================================================
+   EXPORTS FOR EXTERNAL USE
+==================================================== */
 
 module.exports.generateBracketEmbed = generateBracketEmbed;
 module.exports.refreshLiveBracket = refreshLiveBracket;

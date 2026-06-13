@@ -1,5 +1,17 @@
+/**
+ * topstats.js
+ *
+ * View tournament leaderboards for player stats.
+ * Paginated with category and tournament dropdown selectors.
+ *
+ * Usage:  .topstats [category]
+ * Slash:  /topstats category:<value>
+ * Aliases: top-stats, leaderstats, statleaders, lb
+ */
+
 const {
     SlashCommandBuilder,
+    PermissionFlagsBits,
     EmbedBuilder,
     ActionRowBuilder,
     StringSelectMenuBuilder,
@@ -34,6 +46,9 @@ module.exports = {
     description: 'View tournament leaderboards for player stats.',
     usage: '.topstats [category]',
     aliases: ['top-stats', 'leaderstats', 'statleaders', 'lb'],
+    hidden: false,
+    cooldown: 5,
+    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
         .setName('topstats')
@@ -52,6 +67,10 @@ module.exports = {
                 )
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             const category = (args[0] || 'goals').toLowerCase();
@@ -63,10 +82,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('topstats prefix error:', error);
+            console.error('[topstats] prefix error:', error);
             return message.reply('❌ Failed to load top stats.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -81,7 +104,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('topstats slash error:', error);
+            console.error('[topstats] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to load top stats.');
@@ -94,6 +117,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runTopStats({
     guild,
@@ -178,7 +205,7 @@ async function runTopStats({
 
             await interaction.update(updatedPayload);
         } catch (error) {
-            console.error('topstats collector error:', error);
+            console.error('[topstats] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -197,6 +224,10 @@ async function runTopStats({
         } catch {}
     });
 }
+
+/* ====================================================
+   PAYLOAD BUILDER
+==================================================== */
 
 async function buildTopStatsPayload({
     guildId,
@@ -243,6 +274,10 @@ async function buildTopStatsPayload({
         ]
     };
 }
+
+/* ====================================================
+   EMBED BUILDER
+==================================================== */
 
 function buildEmbed({
     tournament,
@@ -298,6 +333,10 @@ function buildEmbed({
         .setTimestamp();
 }
 
+/* ====================================================
+   COMPONENT BUILDERS
+==================================================== */
+
 function buildTournamentDropdown(tournaments, selectedKey) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -345,6 +384,10 @@ function buildPaginationButtons(page, totalPages) {
             .setDisabled(page >= totalPages - 1)
     );
 }
+
+/* ====================================================
+   HELPERS
+==================================================== */
 
 function chunk(array, size) {
     const result = [];

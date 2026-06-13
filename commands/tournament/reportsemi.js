@@ -1,3 +1,11 @@
+/**
+ * reportsemi.js
+ *
+ * Legacy command retired. Use /report instead.
+ *
+ * Aliases: semireport
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -7,31 +15,41 @@ module.exports = {
     name: 'reportsemi',
     description: 'Legacy command retired. Use /report instead.',
     hidden: true,
+    cooldown: 3,
     aliases: ['semireport'],
 
     data: new SlashCommandBuilder()
         .setName('reportsemi')
         .setDescription('Legacy command retired. Use /report instead.'),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message) {
         return sendRetiredMessage({
-            reply: (payload) => message.reply(payload),
+            reply: payload => message.reply(payload),
             commandName: 'reportsemi'
         });
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         return sendRetiredMessage({
-            reply: (payload) => interaction.reply({ ...payload, ephemeral: true }),
+            reply: payload => interaction.reply({ ...payload, ephemeral: true }),
             commandName: 'reportsemi'
         });
     }
 };
 
-function sendRetiredMessage({
-    reply,
-    commandName
-}) {
+/* ====================================================
+   RETIRED MESSAGE
+==================================================== */
+
+function sendRetiredMessage({ reply, commandName }) {
     const embed = new EmbedBuilder()
         .setColor(0xF39C12)
         .setTitle('♻️ LEGACY COMMAND RETIRED')

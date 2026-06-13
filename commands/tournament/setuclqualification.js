@@ -1,22 +1,32 @@
+/**
+ * setuclqualification.js
+ *
+ * Set the number of league UCL qualification spots for a tournament.
+ * Organizer only.
+ *
+ * Usage:  .setuclqualification <tournamentKey> <spots>
+ * Slash:  /setuclqualification tournament:<key> spots:<number>
+ *
+ * Aliases: setucl, uclspots
+ */
+
 const {
     SlashCommandBuilder,
+    PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    TournamentSettings
-} = require('../../models/Tournament');
-
-const {
-    isOrganizer
-} = require('../../utils/isOrganizer');
+const { TournamentSettings } = require('../../models/Tournament');
+const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
     name: 'setuclqualification',
     description: 'Set league UCL qualification spots.',
     usage: '.setuclqualification <tournamentKey> <spots>',
     aliases: ['setucl', 'uclspots'],
-    hidden: true,
+    hidden: false,
+    cooldown: 3,
+    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
         .setName('setuclqualification')
@@ -32,97 +42,91 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
-        if (!message.guild) return;
+        try {
+            if (!message.guild) return;
 
-        if (!(await isOrganizer(
-            message.guild.id,
-            message.author.id
-        ))) {
-            return message.reply('🚫 Unauthorized.');
+            if (!(await isOrganizer(message.guild.id, message.author.id))) {
+                return message.reply('🚫 Unauthorized.');
+            }
+
+            const tournamentKey = args[0]?.toLowerCase();
+            const spots = Number(args[1]);
+
+            if (!tournamentKey || Number.isNaN(spots) || spots < 0) {
+                return message.reply(
+                    '❓ Usage: `.setuclqualification <tournamentKey> <spots>`'
+                );
+            }
+
+            return await runUpdateUclQualification({
+                guildId: message.guild.id,
+                tournamentKey,
+                spots,
+                reply: payload => message.reply(payload)
+            });
+        } catch (error) {
+            console.error('[setuclqualification] prefix error:', error);
+            return message.reply('❌ Failed to update UCL qualification.');
         }
-
-        const tournamentKey =
-            args[0]?.toLowerCase();
-
-        const spots =
-            Number(args[1]);
-
-        if (
-            !tournamentKey ||
-            Number.isNaN(spots) ||
-            spots < 0
-        ) {
-            return message.reply(
-                '❓ Usage: `.setuclqualification <tournamentKey> <spots>`'
-            );
-        }
-
-        return updateUclQualification({
-            guildId: message.guild.id,
-            tournamentKey,
-            spots,
-            reply: payload => message.reply(payload)
-        });
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
-        if (!(await isOrganizer(
-            interaction.guild.id,
-            interaction.user.id
-        ))) {
+        try {
+            if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
+                return interaction.reply({
+                    content: '🚫 Unauthorized.',
+                    ephemeral: true
+                });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+
+            const tournamentKey = interaction.options.getString('tournament').toLowerCase();
+            const spots = interaction.options.getInteger('spots');
+
+            return await runUpdateUclQualification({
+                guildId: interaction.guild.id,
+                tournamentKey,
+                spots,
+                reply: payload => interaction.editReply(payload)
+            });
+        } catch (error) {
+            console.error('[setuclqualification] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to update UCL qualification.');
+            }
+
             return interaction.reply({
-                content: '🚫 Unauthorized.',
+                content: '❌ Failed to update UCL qualification.',
                 ephemeral: true
             });
         }
-
-        const tournamentKey =
-            interaction.options
-                .getString('tournament')
-                .toLowerCase();
-
-        const spots =
-            interaction.options
-                .getInteger('spots');
-
-        return updateUclQualification({
-            guildId: interaction.guild.id,
-            tournamentKey,
-            spots,
-            reply: payload =>
-                interaction.reply(payload)
-        });
     }
 };
 
-async function updateUclQualification({
-    guildId,
-    tournamentKey,
-    spots,
-    reply
-}) {
-    const tournament =
-        await TournamentSettings.findOneAndUpdate(
-            {
-                guildId,
-                tournamentKey
-            },
-            {
-                $set: {
-                    uclQualificationSpots: spots
-                }
-            },
-            {
-                new: true
-            }
-        );
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+async function runUpdateUclQualification({ guildId, tournamentKey, spots, reply }) {
+    const tournament = await TournamentSettings.findOneAndUpdate(
+        { guildId, tournamentKey },
+        { $set: { uclQualificationSpots: spots } },
+        { new: true }
+    );
 
     if (!tournament) {
-        return reply({
-            content:
-                `❌ Tournament \`${tournamentKey}\` not found.`
-        });
+        return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
     const embed = new EmbedBuilder()
@@ -134,7 +138,5 @@ async function updateUclQualification({
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }

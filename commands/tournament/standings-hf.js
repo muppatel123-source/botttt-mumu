@@ -1,10 +1,25 @@
+/**
+ * standings-hf.js
+ *
+ * View standings for a tournament or group.
+ *
+ * Aliases: .standings, .table, .standings-hf
+ * Slash:  /standings-hf
+ *
+ * Generates an image-based standings table using generateStandingsImage().
+ * Supports tournament selector + group buttons.
+ * Falls back to text if image generation fails.
+ *
+ * Uses shared helpers from standingsHelpers.js.
+ */
+
 const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
-    ComponentType,
     SlashCommandBuilder,
-    StringSelectMenuBuilder
+    StringSelectMenuBuilder,
+    AttachmentBuilder
 } = require('discord.js');
 
 const {
@@ -17,10 +32,23 @@ const {
     getTournamentByKey
 } = require('../../utils/getTournament');
 
+const {
+    generateStandingsImage
+} = require('../../utils/generateStandingsImage');
+
+const {
+    sortTeams,
+    compactName,
+    getQualificationZone,
+    truncate
+} = require('../../utils/standingsHelpers');
+
 module.exports = {
     name: 'standings-hf',
     description: 'View standings for a tournament or group.',
     aliases: ['standingshf', 'groupstandings', 'standings', 'table'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('standings-hf')
@@ -44,7 +72,7 @@ module.exports = {
                 reply: payload => message.channel.send(payload)
             });
         } catch (error) {
-            console.error('standings-hf prefix error:', error);
+            console.error('[standings-hf] prefix error:', error);
             return message.reply('❌ Failed to load standings.');
         }
     },
@@ -60,7 +88,7 @@ module.exports = {
                 reply: payload => interaction.reply(payload)
             });
         } catch (error) {
-            console.error('standings-hf slash error:', error);
+            console.error('[standings-hf] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply({ content: '❌ Failed to load standings.' });
@@ -73,6 +101,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   MAIN FLOW
+==================================================== */
 
 async function runStandings({
     guild,
@@ -147,7 +179,7 @@ async function runStandings({
 
             await interaction.update(updatedPayload);
         } catch (error) {
-            console.error('standings collector error:', error);
+            console.error('[standings-hf] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -163,17 +195,37 @@ async function runStandings({
     });
 }
 
+/* ====================================================
+   BUILD PAYLOAD
+==================================================== */
+
+/**
+ * Build the Discord message payload.
+ * Tries image first, falls back to text.
+ *
+ * Components (tournament dropdown + group buttons) are always included.
+ */
 async function buildStandingsPayload({
     guildId,
     tournament,
     tournaments,
     selectedGroup
 }) {
-    const table = await generateTable({
-        guildId,
-        tournament,
-        groupKey: selectedGroup
-    });
+    // ── TRY IMAGE ──
+    let imageResult = null;
+
+    try {
+        imageResult = await generateStandingsImage({
+            settings: tournament,
+            guildId,
+            groupKey: selectedGroup
+        });
+    } catch (imgError) {
+        console.error(
+            '[standings-hf] Image generation failed, using text fallback:',
+            imgError.message
+        );
+    }
 
     const components = [
         buildTournamentDropdown(tournaments, tournament.tournamentKey)
@@ -185,13 +237,55 @@ async function buildStandingsPayload({
         components.push(groupButtons);
     }
 
+    if (imageResult) {
+        const attachment = new AttachmentBuilder(imageResult.buffer, {
+            name: imageResult.fileName
+        });
+
+        const caption = buildCaption({ tournament, selectedGroup });
+
+        return {
+            content: caption,
+            files: [attachment],
+            components
+        };
+    }
+
+    // ── TEXT FALLBACK ──
+    const table = await generateTextTable({
+        guildId,
+        tournament,
+        groupKey: selectedGroup
+    });
+
     return {
         content: table,
         components
     };
 }
 
-async function generateTable({
+/**
+ * Build the text caption above the standings image.
+ */
+function buildCaption({ tournament, selectedGroup }) {
+    const emoji = tournament.emoji || '🏆';
+    const name = (tournament.name || 'Tournament').toUpperCase();
+    const groupLabel = selectedGroup ? ` — Group ${selectedGroup}` : '';
+
+    return `${emoji} **${name}${groupLabel} STANDINGS**\nKey: \`${tournament.tournamentKey}\``;
+}
+
+/* ====================================================
+   TEXT FALLBACK
+==================================================== */
+
+/**
+ * Generate a text-based standings table.
+ * Used when image generation fails.
+ *
+ * Uses shared helpers. No duplicated logic.
+ */
+async function generateTextTable({
     guildId,
     tournament,
     groupKey
@@ -218,57 +312,96 @@ async function generateTable({
 
     teams = sortTeams(teams);
 
-    const qualificationCount = groupKey
-        ? inferQualificationCount(tournament, teams.length)
-        : 0;
-
     let table = groupKey
         ? `🏆 **${tournament.name.toUpperCase()} — GROUP ${groupKey} STANDINGS**\n`
         : `🏆 **${tournament.name.toUpperCase()} — STANDINGS**\n`;
 
     table += `Key: \`${tournament.tournamentKey}\`\n`;
     table += '```ansi\n';
-    table += `\u001b[1;37mPos Team         P  GD  Pts\u001b[0m\n`;
-    table += `-----------------------------\n`;
+    table += `\u001b[1;37mPos Team         P  W  D  L  GF GA GD  Pts\u001b[0m\n`;
+    table += `------------------------------------------------\n`;
 
     teams.forEach((entry, index) => {
         const stats = entry.stats || {};
         const gd = (stats.gf || 0) - (stats.ga || 0);
-        const isQualified = qualificationCount > 0 && index < qualificationCount;
+        const position = index + 1;
 
-        const colorCode = isQualified
-            ? '\u001b[1;32m'
-            : groupKey
-                ? '\u001b[1;31m'
-                : '\u001b[1;36m';
+        const zone = getQualificationZone({
+            position,
+            settings: tournament,
+            groupKey
+        });
 
-        const pos = String(index + 1).padEnd(3, ' ');
-        const name = compactName(entry.teamNameSnapshot || entry.teamId?.name || 'Unknown', 12).padEnd(12, ' ');
+        const isHighlighted = zone === 'ucl' || zone === 'qualification';
+
+        const colorCode = zone === 'ucl'
+            ? '\u001b[1;34m'       // Blue for UCL
+            : zone === 'qualification'
+                ? '\u001b[1;32m'    // Green for qualification
+                : '\u001b[1;36m';   // Cyan for neutral
+
+        const pos = String(position).padEnd(3, ' ');
+        const name = compactName(
+            entry.teamNameSnapshot || entry.teamId?.name || 'Unknown',
+            12
+        ).padEnd(12, ' ');
+
         const played = String(stats.played || 0).padEnd(2, ' ');
+        const wins = String(stats.wins || 0).padEnd(2, ' ');
+        const draws = String(stats.draws || 0).padEnd(2, ' ');
+        const losses = String(stats.losses || 0).padEnd(2, ' ');
+        const gf = String(stats.gf || 0).padEnd(2, ' ');
+        const ga = String(stats.ga || 0).padEnd(2, ' ');
         const gdStr = `${gd >= 0 ? '+' : ''}${gd}`.padEnd(3, ' ');
         const pts = String(stats.points || 0);
 
-        table += `${colorCode}${pos} ${name} ${played} ${gdStr} ${pts}\u001b[0m\n`;
+        table += `${colorCode}${pos} ${name} ${played} ${wins} ${draws} ${losses} ${gf} ${ga} ${gdStr} ${pts}\u001b[0m\n`;
 
-        if (
-            qualificationCount > 0 &&
-            index === qualificationCount - 1 &&
-            teams.length > qualificationCount
-        ) {
-            table += `\u001b[1;30m-----------------------------\u001b[0m\n`;
+        // Zone separator
+        const nextZone = index < teams.length - 1
+            ? getQualificationZone({
+                position: position + 1,
+                settings: tournament,
+                groupKey
+            })
+            : null;
+
+        if (zone !== nextZone && nextZone !== null) {
+            table += `\u001b[1;30m------------------------------------------------\u001b[0m\n`;
         }
     });
 
-    table += `-----------------------------\n`;
+    table += `------------------------------------------------\n`;
 
-    if (qualificationCount > 0) {
-        table += `\u001b[1;32mGreen\u001b[0m = Qualification zone\n`;
+    // Legend
+    const legendParts = [];
+
+    if (teams.some((_, i) =>
+        getQualificationZone({ position: i + 1, settings: tournament, groupKey }) === 'ucl'
+    )) {
+        legendParts.push('\u001b[1;34mBlue\u001b[0m = UCL');
+    }
+
+    if (teams.some((_, i) =>
+        getQualificationZone({ position: i + 1, settings: tournament, groupKey }) === 'qualification'
+    )) {
+        legendParts.push('\u001b[1;32mGreen\u001b[0m = Qualification');
+    }
+
+    if (legendParts.length) {
+        table += legendParts.join('  •  ') + '\n';
     }
 
     table += '```';
 
     return table;
 }
+
+/*
+========================================
+COMPONENT BUILDERS
+========================================
+*/
 
 function buildTournamentDropdown(tournaments, selectedKey) {
     return new ActionRowBuilder().addComponents(
@@ -317,46 +450,4 @@ function buildGroupButtons(tournament, selectedGroup) {
 
 function getFirstGroup(tournament) {
     return (tournament.groupCount || 0) > 0 ? 'A' : null;
-}
-
-function inferQualificationCount(settings) {
-    if (!settings?.hasKnockout) {
-        return 0;
-    }
-
-    return settings.qualificationSpotsPerGroup || 2;
-}
-
-function sortTeams(teams) {
-    return [...teams].sort((a, b) => {
-        const aStats = a.stats || {};
-        const bStats = b.stats || {};
-
-        const aPoints = aStats.points || 0;
-        const bPoints = bStats.points || 0;
-        if (bPoints !== aPoints) return bPoints - aPoints;
-
-        const aGD = (aStats.gf || 0) - (aStats.ga || 0);
-        const bGD = (bStats.gf || 0) - (bStats.ga || 0);
-        if (bGD !== aGD) return bGD - aGD;
-
-        const aGF = aStats.gf || 0;
-        const bGF = bStats.gf || 0;
-        if (bGF !== aGF) return bGF - aGF;
-
-        const aName = a.teamNameSnapshot || a.teamId?.name || '';
-        const bName = b.teamNameSnapshot || b.teamId?.name || '';
-
-        return aName.localeCompare(bName);
-    });
-}
-
-function compactName(name, maxLen = 12) {
-    if (!name) return 'Unknown';
-    return name.length > maxLen ? name.slice(0, maxLen - 2) + '..' : name;
-}
-
-function truncate(text, max) {
-    const value = String(text || '');
-    return value.length > max ? value.slice(0, max - 3) + '...' : value;
 }

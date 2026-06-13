@@ -1,3 +1,19 @@
+/**
+ * removestats.js
+ *
+ * Remove raw match stats from a tournament. Parses CSV-like stat lines
+ * (discordID, goals, assists, interceptions, tackles, saves) and subtracts
+ * from TournamentPlayer + UserProfile allTimeStats.
+ *
+ * Prefix supports: direct text, replied message, or code block extraction.
+ * Slash requires raw stats text in the option.
+ *
+ * Usage:  .removestats [key] <raw stats or reply>
+ * Slash:  /removestats key:<key> stats:<raw text>
+ *
+ * Aliases: rs, undostats
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -5,19 +21,14 @@ const {
 } = require('discord.js');
 
 const {
+    Player,
     TournamentSettings,
     TournamentPlayer,
-    UserProfile,
-    Player
+    UserProfile
 } = require('../../models/Tournament');
 
 const { updateLiveTopStats } = require('../../utils/updateTopStats');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -25,7 +36,7 @@ module.exports = {
     description: 'Remove raw match stats from a tournament.',
     usage: '.removestats <key> [raw stats]',
     aliases: ['rs', 'undostats'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -39,9 +50,13 @@ module.exports = {
         )
         .addStringOption(opt =>
             opt.setName('stats')
-                .setDescription('Optional raw stats text')
-                .setRequired(false)
+                .setDescription('Raw stats text (discordID, goals, assists, interceptions, tackles, saves)')
+                .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -53,66 +68,54 @@ module.exports = {
 
             const possibleKey = args[0]?.toLowerCase();
 
-const tournament = await resolveTournament(
-    message.guild.id,
-    possibleKey
-);
+            const tournament = await resolveTournament(message.guild.id, possibleKey);
 
-if (!tournament) {
-    return message.reply(
-        '❌ Tournament not found. Set a default tournament or use `.rs <tournamentKey>`.'
-    );
-}
+            if (!tournament) {
+                return message.reply(
+                    '❌ Tournament not found. Set a default tournament or use `.rs <tournamentKey>`.'
+                );
+            }
 
-const firstArgIsKey =
-    Boolean(
-        possibleKey &&
-        possibleKey === tournament.tournamentKey
-    );
+            const firstArgIsKey = Boolean(possibleKey && possibleKey === tournament.tournamentKey);
 
-const rawText = await getRawStatsFromMessage(
-    message,
-    args,
-    firstArgIsKey
-);
+            let rawText = await getRawStatsFromMessage(message, args, firstArgIsKey);
 
+            // Fallback: try replied message
             if (!rawText && message.reference?.messageId) {
                 const replied = await message.channel.messages
                     .fetch(message.reference.messageId)
                     .catch(() => null);
 
-                if (replied) rawText = replied.content || '';
+                if (replied?.content) rawText = extractRawStatsBlock(replied.content);
             }
 
             if (!rawText) {
                 return message.reply('❌ No raw stats text found.');
             }
 
-            const waitMsg = await message.reply(
-    '⏳ Removing match stats...'
-);
+            const waitMsg = await message.reply('⏳ Removing match stats...');
 
-return await runRemoveStats({
-    guild: message.guild,
-    tournament,
-    rawText,
-    organizerUser: message.author,
-    respondFinal: payload =>
-        waitMsg.edit(payload)
-});
+            return await runRemoveStats({
+                guild: message.guild,
+                tournament,
+                rawText,
+                organizerUser: message.author,
+                respondFinal: payload => waitMsg.edit(payload)
+            });
         } catch (error) {
-            console.error('removestats prefix error:', error);
+            console.error('[removestats] prefix error:', error);
             return message.reply('❌ Failed to remove stats.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -121,53 +124,56 @@ return await runRemoveStats({
             const rawText = interaction.options.getString('stats');
 
             if (!rawText) {
-                return interaction.editReply('❌ Slash version requires raw stats text.');
+                return interaction.editReply('❌ Raw stats text is required.');
+            }
+
+            const tournament = await resolveTournament(interaction.guild.id, tournamentKey);
+
+            if (!tournament) {
+                return interaction.editReply(`❌ Tournament \`${tournamentKey}\` not found.`);
             }
 
             return await runRemoveStats({
                 guild: interaction.guild,
-                tournamentKey,
+                tournament,
                 rawText,
-                reply: payload => interaction.editReply(payload)
+                organizerUser: interaction.user,
+                respondFinal: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('removestats slash error:', error);
+            console.error('[removestats] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to remove stats.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to remove stats.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to remove stats.', ephemeral: true });
         }
     }
 };
 
+/* ====================================================
+   TOURNAMENT RESOLUTION
+==================================================== */
+
 async function resolveTournament(guildId, key) {
     if (key) {
-        const found = await getTournamentByKey(guildId, key, {
-            includeCompleted: true
-        });
-
+        const found = await getTournamentByKey(guildId, key, { includeCompleted: true });
         if (found) return found;
     }
 
-    return getDefaultTournament(guildId, {
-        includeCompleted: true
-    });
+    return getDefaultTournament(guildId, { includeCompleted: true });
 }
 
-async function runRemoveStats({
-    guild,
-    tournament,
-    rawText,
-    organizerUser,
-    respondFinal
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
-
+/**
+ * Parse raw stat lines and subtract from TournamentPlayer + UserProfile.
+ * DMs the detailed report to the organizer, then confirms in channel.
+ */
+async function runRemoveStats({ guild, tournament, rawText, organizerUser, respondFinal }) {
     const lines = rawText
         .split('\n')
         .map(line => line.trim())
@@ -197,14 +203,7 @@ async function runRemoveStats({
             continue;
         }
 
-        const {
-            discordID,
-            goals,
-            assists,
-            interceptions,
-            tackles,
-            saves
-        } = parsed.data;
+        const { discordID, goals, assists, interceptions, tackles, saves } = parsed.data;
 
         const player = await Player.findOne({
             guildId: guild.id,
@@ -226,21 +225,13 @@ async function runRemoveStats({
 
         if (!tournamentPlayer) {
             skippedPlayers++;
-            skippedLines.push(
-                `${player.name} is not active in ${tournament.tournamentKey}`
-            );
+            skippedLines.push(`${player.name} is not active in ${tournament.tournamentKey}`);
             continue;
         }
 
         const removed = subtractStatsObject(
             tournamentPlayer.stats,
-            {
-                goals,
-                assists,
-                interceptions,
-                tackles,
-                saves
-            },
+            { goals, assists, interceptions, tackles, saves },
             true
         );
 
@@ -249,13 +240,7 @@ async function runRemoveStats({
         await subtractFromUserProfile({
             guildId: guild.id,
             discordID,
-            statsToRemove: {
-                goals,
-                assists,
-                interceptions,
-                tackles,
-                saves
-            }
+            statsToRemove: { goals, assists, interceptions, tackles, saves }
         });
 
         updatedPlayers++;
@@ -267,11 +252,10 @@ async function runRemoveStats({
         totals.tackles += removed.tackles;
         totals.saves += removed.saves;
 
-        removedLines.push(
-            `${player.name}: ${buildRemovedText(removed)}`
-        );
+        removedLines.push(`${player.name}: ${buildRemovedText(removed)}`);
     }
 
+    /* ── Update live stats ── */
     await updateLiveTopStats(
         global.client || guild.client,
         guild.id,
@@ -282,6 +266,7 @@ async function runRemoveStats({
         global.io.emit('update');
     }
 
+    /* ── DM detailed report to organizer ── */
     const embed = new EmbedBuilder()
         .setColor(updatedPlayers > 0 ? 0xE67E22 : 0xE74C3C)
         .setTitle('➖ MATCH STATS REMOVED')
@@ -318,54 +303,40 @@ async function runRemoveStats({
                 inline: false
             }
         )
-        .setFooter({
-            text: `${tournament.name} • ${tournament.tournamentKey}`
-        })
+        .setFooter({ text: `${tournament.name} • ${tournament.tournamentKey}` })
         .setTimestamp();
 
-await organizerUser
-    .send({
-        embeds: [embed]
-    })
-    .catch(() => null);
+    await organizerUser
+        .send({ embeds: [embed] })
+        .catch(() => null);
 
-return respondFinal({
-    content: '✅ Stats Removed',
-    embeds: []
-});
+    return respondFinal({ content: '✅ Stats Removed', embeds: [] });
 }
 
-async function getRawStatsFromMessage(
-    message,
-    args,
-    firstArgIsKey
-) {
+/* ====================================================
+   RAW TEXT EXTRACTION
+==================================================== */
+
+/** Get raw stats text from the message content or a replied message. */
+async function getRawStatsFromMessage(message, args, firstArgIsKey) {
     const replied = message.reference?.messageId
-        ? await message.channel.messages
-            .fetch(message.reference.messageId)
-            .catch(() => null)
+        ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
         : null;
 
     if (replied?.content) {
-        return extractRawStatsBlock(
-            replied.content
-        );
+        return extractRawStatsBlock(replied.content);
     }
 
-    const contentArgs = firstArgIsKey
-        ? args.slice(1)
-        : args;
+    const contentArgs = firstArgIsKey ? args.slice(1) : args;
 
     if (!contentArgs.length) return '';
 
     return contentArgs.join(' ');
 }
 
+/** Extract stats block from code block or lines starting with a Discord ID. */
 function extractRawStatsBlock(content) {
-    const codeBlockMatch =
-        content.match(
-            /```(?:\w+)?\n?([\s\S]*?)```/
-        );
+    const codeBlockMatch = content.match(/```(?:\w+)?\n?([\s\S]*?)```/);
 
     if (codeBlockMatch) {
         return codeBlockMatch[1].trim();
@@ -374,33 +345,29 @@ function extractRawStatsBlock(content) {
     return content
         .split('\n')
         .map(line => line.trim())
-        .filter(line =>
-            /^\d{17,20}\s*,/.test(line)
-        )
+        .filter(line => /^\d{17,20}\s*,/.test(line))
         .join('\n');
 }
 
-async function subtractFromUserProfile({
-    guildId,
-    discordID,
-    statsToRemove
-}) {
-    const profile = await UserProfile.findOne({
-        guildId,
-        discordID
-    });
+/* ====================================================
+   STAT SUBTRACTION
+==================================================== */
+
+/** Subtract stats from a UserProfile's allTimeStats. */
+async function subtractFromUserProfile({ guildId, discordID, statsToRemove }) {
+    const profile = await UserProfile.findOne({ guildId, discordID });
 
     if (!profile) return;
 
-    subtractStatsObject(
-        profile.allTimeStats,
-        statsToRemove,
-        true
-    );
+    subtractStatsObject(profile.allTimeStats, statsToRemove, true);
 
     await profile.save();
 }
 
+/**
+ * Subtract stats from a stats object. Clamps to 0 (no negatives).
+ * Returns the actual amounts removed.
+ */
 function subtractStatsObject(targetStats, statsToRemove, removePlayed) {
     if (!targetStats) return emptyRemoved();
 
@@ -425,29 +392,14 @@ function subtractStatsObject(targetStats, statsToRemove, removePlayed) {
 }
 
 function emptyRemoved() {
-    return {
-        played: 0,
-        goals: 0,
-        assists: 0,
-        tackles: 0,
-        interceptions: 0,
-        saves: 0
-    };
+    return { played: 0, goals: 0, assists: 0, tackles: 0, interceptions: 0, saves: 0 };
 }
 
-function buildRemovedText(stats) {
-    const parts = [];
+/* ====================================================
+   FORMATTING HELPERS
+==================================================== */
 
-    if (stats.played) parts.push(`-1 played`);
-    if (stats.goals) parts.push(`-${stats.goals} goals`);
-    if (stats.assists) parts.push(`-${stats.assists} assists`);
-    if (stats.tackles) parts.push(`-${stats.tackles} tackles`);
-    if (stats.interceptions) parts.push(`-${stats.interceptions} interceptions`);
-    if (stats.saves) parts.push(`-${stats.saves} saves`);
-
-    return parts.length ? parts.join(', ') : 'nothing removed';
-}
-
+/** Parse a CSV stat line: discordID, goals, assists, interceptions, tackles, saves. */
 function parseRawStatLine(line) {
     const parts = line.split(',').map(part => part.trim());
 
@@ -455,14 +407,7 @@ function parseRawStatLine(line) {
         return { ok: false };
     }
 
-    const [
-        rawId,
-        rawGoals,
-        rawAssists,
-        rawInterceptions,
-        rawTackles,
-        rawSaves
-    ] = parts;
+    const [rawId, rawGoals, rawAssists, rawInterceptions, rawTackles, rawSaves] = parts;
 
     const discordID = rawId.replace(/[<@!>]/g, '');
 
@@ -486,4 +431,17 @@ function parseRawStatLine(line) {
 function safeInt(value) {
     const parsed = parseInt(value, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function buildRemovedText(stats) {
+    const parts = [];
+
+    if (stats.played) parts.push('-1 played');
+    if (stats.goals) parts.push(`-${stats.goals} goals`);
+    if (stats.assists) parts.push(`-${stats.assists} assists`);
+    if (stats.tackles) parts.push(`-${stats.tackles} tackles`);
+    if (stats.interceptions) parts.push(`-${stats.interceptions} interceptions`);
+    if (stats.saves) parts.push(`-${stats.saves} saves`);
+
+    return parts.length ? parts.join(', ') : 'nothing removed';
 }

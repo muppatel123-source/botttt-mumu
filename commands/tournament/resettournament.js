@@ -1,3 +1,10 @@
+/**
+ * resettournament.js
+ *
+ * Reset data for one specific tournament safely.
+ * Supports multiple modes: fixtures, draw, stats, players, teams, settings, all.
+ * Requires explicit confirmation to prevent accidental resets.
+ */
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -20,7 +27,7 @@ module.exports = {
     description: 'Reset data for one specific tournament safely.',
     usage: '.resettournament <tournamentKey> mode=<fixtures|draw|stats|players|teams|settings|all> --confirm',
     aliases: ['rtreset', 'treset'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -52,6 +59,11 @@ module.exports = {
                 .setRequired(true)
         ),
 
+
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -76,10 +88,15 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('resettournament prefix error:', error);
+            console.error('[resettournament] prefix error:', error);
             return message.reply('❌ Failed to reset tournament data.');
         }
     },
+
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -102,7 +119,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('resettournament slash error:', error);
+            console.error('[resettournament] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to reset tournament data.');

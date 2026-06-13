@@ -1,3 +1,15 @@
+/**
+ * removeteamfromtournament.js
+ *
+ * Remove a team from a specific tournament. Deactivates the team and its
+ * players, and applies 3-0 walkover wins to all remaining opponents.
+ *
+ * Usage:  .removeteamfromtournament <key> <team name>
+ * Slash:  /removeteamfromtournament key:<key> team:<team>
+ *
+ * Aliases: removefromtour, rtt, removetourteam
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -13,13 +25,14 @@ const {
 } = require('../../models/Tournament');
 
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'removeteamfromtournament',
     description: 'Remove a team from a tournament and give opponents 3-0 walkover wins.',
     usage: '.removeteamfromtournament <key> <team name>',
     aliases: ['removefromtour', 'rtt', 'removetourteam'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -36,6 +49,10 @@ module.exports = {
                 .setDescription('Team name')
                 .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -56,18 +73,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('removeteamfromtournament prefix error:', error);
+            console.error('[removeteamfromtournament] prefix error:', error);
             return message.reply('❌ Failed to remove team from tournament.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 You are not authorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 You are not authorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -79,26 +97,29 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('removeteamfromtournament slash error:', error);
+            console.error('[removeteamfromtournament] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to remove team from tournament.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to remove team from tournament.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to remove team from tournament.', ephemeral: true });
         }
     }
 };
 
-async function runRemove({
-    guild,
-    tournamentKey,
-    teamName,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Withdraw a team from a tournament:
+ * 1. Deactivate TournamentTeam + TournamentPlayer entries
+ * 2. Apply 3-0 walkovers to all unplayed fixtures
+ * 3. Update opponent standings
+ */
+async function runRemove({ guild, tournamentKey, teamName, reply }) {
+    /* ── Find tournament ── */
     const tournament = await TournamentSettings.findOne({
         guildId: guild.id,
         tournamentKey
@@ -108,17 +129,17 @@ async function runRemove({
         return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
+    /* ── Find team ── */
     const team = await Team.findOne({
         guildId: guild.id,
-        name: {
-            $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-        }
+        name: { $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i') }
     });
 
     if (!team) {
         return reply({ content: `❌ Team **${teamName}** not found.` });
     }
 
+    /* ── Find tournament entry ── */
     const entry = await TournamentTeam.findOne({
         guildId: guild.id,
         tournamentId: tournament._id,
@@ -126,33 +147,31 @@ async function runRemove({
     });
 
     if (!entry) {
-        return reply({
-            content: `❌ **${team.name}** is not in **${tournament.name}**.`
-        });
+        return reply({ content: `❌ **${team.name}** is not in **${tournament.name}**.` });
     }
 
+    /* ── Deactivate tournament team ── */
     entry.isActive = false;
     await entry.save();
 
+    /* ── Deactivate tournament players ── */
     const playerUpdate = await TournamentPlayer.updateMany(
         {
             guildId: guild.id,
             tournamentId: tournament._id,
             teamId: team._id
         },
-        {
-            $set: {
-                isActive: false
-            }
-        }
+        { $set: { isActive: false } }
     );
 
+    /* ── Apply walkovers to remaining fixtures ── */
     const walkoverResult = await applyWalkovers({
         guildId: guild.id,
         tournament,
         withdrawnTeam: team
     });
 
+    /* ── Response ── */
     const embed = new EmbedBuilder()
         .setColor(0xE74C3C)
         .setTitle('🚫 TEAM WITHDRAWN FROM TOURNAMENT')
@@ -161,26 +180,25 @@ async function runRemove({
             `${tournament.emoji || '🏆'} Key: \`${tournament.tournamentKey}\`\n` +
             `Players disabled: **${playerUpdate.modifiedCount || 0}**`
         )
-        .addFields(
-            {
-                name: 'Walkovers Applied',
-                value:
-                    `Fixtures reported 3-0: **${walkoverResult.updatedFixtures}**\n` +
-                    `Opponent standing wins: **${walkoverResult.opponentWins}**\n` +
-                    `Withdrawn team losses: **${walkoverResult.withdrawnLosses}**`,
-                inline: false
-            }
-        )
+        .addFields({
+            name: 'Walkovers Applied',
+            value:
+                `Fixtures reported 3-0: **${walkoverResult.updatedFixtures}**\n` +
+                `Opponent standing wins: **${walkoverResult.opponentWins}**\n` +
+                `Withdrawn team losses: **${walkoverResult.withdrawnLosses}**`,
+            inline: false
+        })
         .setTimestamp();
 
     return reply({ embeds: [embed] });
 }
 
-async function applyWalkovers({
-    guildId,
-    tournament,
-    withdrawnTeam
-}) {
+/* ====================================================
+   WALKOVER ENGINE
+==================================================== */
+
+/** Apply 3-0 walkover wins to all unplayed fixtures of the withdrawn team. */
+async function applyWalkovers({ guildId, tournament, withdrawnTeam }) {
     const fixtures = await Fixture.find({
         guildId,
         tournamentId: tournament._id,
@@ -208,13 +226,8 @@ async function applyWalkovers({
 
         if (!withdrawnIsHome && !withdrawnIsAway) continue;
 
-        const opponentTeamId = withdrawnIsHome
-            ? fixture.awayTeamId
-            : fixture.homeTeamId;
-
-        const withdrawnTeamId = withdrawnIsHome
-            ? fixture.homeTeamId
-            : fixture.awayTeamId;
+        const opponentTeamId = withdrawnIsHome ? fixture.awayTeamId : fixture.homeTeamId;
+        const withdrawnTeamId = withdrawnIsHome ? fixture.homeTeamId : fixture.awayTeamId;
 
         const opponentEntry = await TournamentTeam.findOne({
             guildId,
@@ -228,8 +241,8 @@ async function applyWalkovers({
             teamId: withdrawnTeamId
         });
 
+        /* ── Update fixture result ── */
         fixture.status = 'Played';
-
         fixture.result = {
             ...(fixture.result || {}),
             home: withdrawnIsHome ? 0 : 3,
@@ -240,13 +253,13 @@ async function applyWalkovers({
             penaltiesAway: null,
             winner: withdrawnIsHome ? fixture.awayTeam : fixture.homeTeam
         };
-
         fixture.notes = `Walkover: ${withdrawnTeam.name} withdrew from ${tournament.name}.`;
         fixture.reportedAt = new Date();
 
         await fixture.save();
         updatedFixtures++;
 
+        /* ── Update standings ── */
         if (opponentEntry) {
             addWin(opponentEntry.stats, 3, 0, tournament);
             await opponentEntry.save();
@@ -260,12 +273,12 @@ async function applyWalkovers({
         }
     }
 
-    return {
-        updatedFixtures,
-        opponentWins,
-        withdrawnLosses
-    };
+    return { updatedFixtures, opponentWins, withdrawnLosses };
 }
+
+/* ====================================================
+   STANDING HELPERS
+==================================================== */
 
 function addWin(stats, gf, ga, tournament) {
     stats.played = (stats.played || 0) + 1;
@@ -281,8 +294,4 @@ function addLoss(stats, gf, ga, tournament) {
     stats.gf = (stats.gf || 0) + gf;
     stats.ga = (stats.ga || 0) + ga;
     stats.points = (stats.points || 0) + (tournament.pointsLoss ?? 0);
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

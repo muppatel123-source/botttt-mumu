@@ -1,5 +1,17 @@
+/**
+ * viewtournament.js
+ *
+ * View tournament configuration and progress.
+ * Interactive dropdown to switch between tournaments.
+ *
+ * Usage:  .viewtournament
+ * Slash:  /viewtournament
+ * Aliases: vt, tournamentinfo, viewtour
+ */
+
 const {
     SlashCommandBuilder,
+    PermissionFlagsBits,
     EmbedBuilder,
     ActionRowBuilder,
     StringSelectMenuBuilder
@@ -24,10 +36,17 @@ module.exports = {
     description: 'View tournament configuration and progress.',
     usage: '.viewtournament',
     aliases: ['vt', 'tournamentinfo', 'viewtour'],
+    hidden: false,
+    cooldown: 3,
+    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
         .setName('viewtournament')
         .setDescription('View tournament overview'),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message) {
         try {
@@ -43,10 +62,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('viewtournament prefix error:', error);
+            console.error('[viewtournament] prefix error:', error);
             return message.reply('❌ Failed to load tournament overview.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -65,7 +88,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('viewtournament slash error:', error);
+            console.error('[viewtournament] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to load tournament overview.');
@@ -78,6 +101,10 @@ module.exports = {
         }
     }
 };
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runViewTournament({ guild, userId, reply }) {
     const tournaments = await getSelectableTournaments(guild.id);
@@ -113,7 +140,7 @@ async function runViewTournament({ guild, userId, reply }) {
 
             await interaction.update(await buildPayload(guild, tournament, tournaments));
         } catch (error) {
-            console.error('viewtournament collector error:', error);
+            console.error('[viewtournament] collector error:', error);
         }
     });
 
@@ -121,6 +148,10 @@ async function runViewTournament({ guild, userId, reply }) {
         await msg.edit({ components: [] }).catch(() => null);
     });
 }
+
+/* ====================================================
+   PAYLOAD BUILDER
+==================================================== */
 
 async function buildPayload(guild, tournament, tournaments) {
     const [teamCount, playerCount, fixtures] = await Promise.all([
@@ -198,6 +229,10 @@ async function buildPayload(guild, tournament, tournaments) {
     };
 }
 
+/* ====================================================
+   COMPONENT BUILDERS
+==================================================== */
+
 function buildTournamentDropdown(tournaments, selectedKey) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
@@ -213,6 +248,10 @@ function buildTournamentDropdown(tournaments, selectedKey) {
             )
     );
 }
+
+/* ====================================================
+   HELPERS
+==================================================== */
 
 function buildFixtureCounts(fixtures) {
     if (!fixtures.length) return 'No fixtures generated yet.';

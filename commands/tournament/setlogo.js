@@ -1,3 +1,17 @@
+/**
+ * setlogo.js
+ *
+ * Set your team logo, or set any team logo as organizer.
+ * Captain/VC can set their own team's logo. Organizers can set any team.
+ * Accepts image URLs or Discord attachments.
+ *
+ * Usage:  .setlogo <image link>  (or attach image)
+ *         .setlogo <team name> <image link>  (organizer only)
+ * Slash:  /setlogo [image_url] [team:<name>]
+ *
+ * Aliases: logo
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -5,12 +19,15 @@ const {
 
 const { Team } = require('../../models/Tournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'setlogo',
     description: 'Set your team logo, or set any team logo as organizer.',
     usage: '.setlogo [team name] <image link> OR upload attachment',
     aliases: ['logo'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('setlogo')
@@ -25,6 +42,10 @@ module.exports = {
                 .setDescription('Organizer only: team name')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -62,10 +83,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('setlogo prefix error:', error);
+            console.error('[setlogo] prefix error:', error);
             return message.reply('❌ Failed to update logo.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -82,7 +107,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('setlogo slash error:', error);
+            console.error('[setlogo] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to update logo.');
@@ -96,20 +121,17 @@ module.exports = {
     }
 };
 
-async function runSetLogo({
-    guild,
-    userId,
-    organizer,
-    teamName,
-    logoURL,
-    reply
-}) {
-    const team = await resolveTeam({
-        guild,
-        userId,
-        organizer,
-        teamName
-    });
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Set a team's logo.
+ * Captain/VC path: resolve team from user's membership.
+ * Organizer path: resolve team by name argument.
+ */
+async function runSetLogo({ guild, userId, organizer, teamName, logoURL, reply }) {
+    const team = await resolveTeam({ guild, userId, organizer, teamName });
 
     if (!team) {
         return reply({
@@ -149,21 +171,16 @@ async function runSetLogo({
     return reply({ embeds: [embed] });
 }
 
-async function resolveTeam({
-    guild,
-    userId,
-    organizer,
-    teamName
-}) {
-    if (organizer && teamName) {
-        return Team.findOne({
-            guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-            }
-        });
-    }
+/* ====================================================
+   HELPERS
+==================================================== */
 
+/**
+ * Resolve which team to operate on.
+ * Organizer + teamName → find by name.
+ * Otherwise → find by captain/VC membership.
+ */
+async function resolveTeam({ guild, userId, organizer, teamName }) {
     if (organizer && teamName) {
         return Team.findOne({
             guildId: guild.id,
@@ -189,14 +206,11 @@ async function resolveTeam({
     return team;
 }
 
+/** Check if a URL points to a valid image format. */
 function isValidImageUrl(url) {
     const value = String(url || '').trim();
 
     if (!/^https?:\/\//i.test(value)) return false;
 
     return /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(value);
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
