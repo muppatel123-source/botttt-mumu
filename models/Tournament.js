@@ -267,6 +267,13 @@ const playerSchema = new mongoose.Schema(
             default: null
         },
 
+        discordUsername: {
+            type: String,
+            default: null,
+            trim: true,
+            lowercase: true
+        },
+
         teamId: {
             type: mongoose.Schema.Types.ObjectId,
             ref: 'Team',
@@ -618,6 +625,8 @@ fixtureSchema.index({ guildId: 1, tournamentId: 1, phase: 1, roundLabel: 1 });
 ========================================
 USER PROFILE
 All-time stats + awards + trophies.
+Per-guild for stats; trophies/awards are
+aggregated globally when displayed.
 ========================================
 */
 const userProfileSchema = new mongoose.Schema(
