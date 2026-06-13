@@ -1,24 +1,18 @@
 require('dotenv').config();
 
 const { Events, REST, Routes } = require('discord.js');
-const express = require('express');
-const app = express();
 const mongoose = require('mongoose');
 const {
     Client,
     GatewayIntentBits,
     Collection,
     EmbedBuilder,
-    PermissionFlagsBits,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle
+    PermissionFlagsBits
 } = require('discord.js');
 const Enmap = require('enmap').default || require('enmap');
 const fs = require('fs');
 const path = require('path');
 const { getGuildPrefix, DEFAULT_PREFIX } = require('./utils/prefixManager');
-const { setupWeb } = require('./web/server');
 
 process.setMaxListeners(20);
 
@@ -77,19 +71,22 @@ mongoose.connect(process.env.MONGODB_URI)
 
 /*
 ========================================
-4. EXPRESS SERVER LOGIC
+4. EXPRESS / SOCKET.IO (STUB)
+   Web panel removed — keeping a minimal
+   socket.io instance for future use.
+   Tournament commands guard with
+   if (global.io) so this is safe.
 ========================================
 */
-
-setupWeb(app, client);
-
+const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
+const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-global.io = io; // make it usable everywhere
+global.io = io;
 
 const port = process.env.PORT || 7860;
 server.listen(port, '0.0.0.0', () => {
@@ -152,6 +149,7 @@ const foldersPath = path.join(__dirname, 'commands');
 
 if (fs.existsSync(foldersPath)) {
     const commandFolders = fs.readdirSync(foldersPath);
+    let totalLoaded = 0;
 
     for (const folder of commandFolders) {
         const commandsPath = path.join(foldersPath, folder);
@@ -174,14 +172,15 @@ if (fs.existsSync(foldersPath)) {
 
                 command.category = folder.toLowerCase();
                 client.commands.set(command.name, command);
-
-                console.log(`✅ Loaded command: ${command.name} (${folder}/${file})`);
+                totalLoaded++;
             } catch (error) {
                 console.error(`❌ Failed to load command file: ${filePath}`);
                 console.error(error);
             }
         }
     }
+
+    console.log(`✅ Loaded ${totalLoaded} command(s) across ${commandFolders.length} folder(s).`);
 } else {
     console.warn('⚠️ commands folder not found.');
 }
@@ -310,10 +309,6 @@ client.on('error', (error) => {
     console.error('❌ Discord Client Error:', error);
 });
 
-client.on('warn', (warning) => {
-    console.warn('⚠️ Discord Warning:', warning);
-});
-
 /*
 ========================================
 9. HELPER FUNCTION: COMMAND HANDLER
@@ -377,6 +372,7 @@ async function runCommand(command, input, args, isSlash) {
                 await input.reply({ content: 'This command is prefix-only for now!', ephemeral: true });
             }
         } else {
+            input.channel.sendTyping().catch(() => null);
             await command.execute(input, args);
         }
 
@@ -422,344 +418,14 @@ async function runCommand(command, input, args, isSlash) {
 ========================================
 */
 client.on('interactionCreate', async (interaction) => {
-    /*
-    ========================================
-    10A. SLASH COMMANDS
-    ========================================
-    */
+    /* ── Slash Commands ── */
+
     if (interaction.isChatInputCommand()) {
         const command = client.commands.get(interaction.commandName);
         if (command) {
             await runCommand(command, interaction, null, true);
         }
         return;
-    }
-
-    /*
-    ========================================
-    10B. BUTTONS
-    ========================================
-    */
-    if (!interaction.isButton()) return;
-
-    try {
-        /*
-        ========================================
-        DRAW TEAM BUTTON
-        ========================================
-        */
-        if (interaction.customId.startsWith('draw_team_')) {
-            const starterId = interaction.customId.split('_')[2];
-
-            if (interaction.user.id !== starterId) {
-                return interaction.reply({
-                    content: '🚫 Only the organizer who started the draw can use this button.',
-                    ephemeral: true
-                });
-            }
-
-            const settings = await client.db.tournamentSettings.findOne({
-                guildId: interaction.guild.id
-            });
-
-            if (!settings) {
-                return interaction.reply({
-                    content: '❌ Tournament settings not found.',
-                    ephemeral: true
-                });
-            }
-
-            const teams = await client.db.teams.find({
-                guildId: interaction.guild.id
-            });
-
-            if (!teams.length) {
-                return interaction.reply({
-                    content: '❌ No teams found.',
-                    ephemeral: true
-                });
-            }
-
-            const undrawnTeams = teams.filter(team => !team.groupKey);
-
-            if (!undrawnTeams.length) {
-                const completeEmbed = new EmbedBuilder()
-                    .setColor(0x2ECC71)
-                    .setTitle('🏆 GROUP DRAW COMPLETED')
-                    .setDescription(
-                        'All teams have been drawn successfully.\n\n' +
-                        'Would you like to generate fixtures now?'
-                    )
-                    .addFields(
-                        {
-                            name: 'Option 1',
-                            value: '✅ Auto-generate fixtures now',
-                            inline: false
-                        },
-                        {
-                            name: 'Option 2',
-                            value: '❌ Keep manual mode for fixtures',
-                            inline: false
-                        }
-                    )
-                    .setFooter({
-                        text: 'Organizer Controlled Tournament Flow'
-                    })
-                    .setTimestamp();
-
-                const completeRow = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder()
-                        .setCustomId(`generate_fixtures_${starterId}`)
-                        .setLabel('✅ Generate Fixtures')
-                        .setStyle(ButtonStyle.Success),
-
-                    new ButtonBuilder()
-                        .setCustomId(`manual_fixtures_${starterId}`)
-                        .setLabel('❌ Manual Mode')
-                        .setStyle(ButtonStyle.Secondary)
-                );
-
-                return interaction.update({
-                    embeds: [completeEmbed],
-                    components: [completeRow]
-                });
-            }
-
-            const randomTeam = undrawnTeams[Math.floor(Math.random() * undrawnTeams.length)];
-
-            const groupCount = settings.groupCount || 2;
-
-            const groupKeys = Array.from(
-                { length: groupCount },
-                (_, i) => String.fromCharCode(65 + i)
-            );
-
-            let selectedGroup = null;
-            let lowestCount = Infinity;
-
-            for (const group of groupKeys) {
-                const count = await client.db.teams.countDocuments({
-                    guildId: interaction.guild.id,
-                    groupKey: group
-                });
-
-                if (count < lowestCount) {
-                    lowestCount = count;
-                    selectedGroup = group;
-                }
-            }
-
-            randomTeam.groupKey = selectedGroup;
-            await randomTeam.save();
-
-            let groupText = '';
-
-            for (const group of groupKeys) {
-                const groupTeams = await client.db.teams.find({
-                    guildId: interaction.guild.id,
-                    groupKey: group
-                });
-
-                const names = groupTeams.length
-                    ? groupTeams.map(t => `• ${t.name}`).join('\n')
-                    : '*Waiting...*';
-
-                groupText += `### Group ${group}\n${names}\n\n`;
-            }
-
-            const embed = new EmbedBuilder()
-                .setColor(0xF1C40F)
-                .setTitle('🏆 LIVE GROUP DRAW')
-                .setDescription(
-                    `✨ **${randomTeam.name}** has been drawn!\n` +
-                    `→ Assigned to **Group ${selectedGroup}**\n\n` +
-                    groupText
-                )
-                .setFooter({
-                    text: 'Organizer Controlled Draw'
-                })
-                .setTimestamp();
-
-            return interaction.update({
-                embeds: [embed]
-            });
-        }
-
-        /*
-        ========================================
-        GENERATE FIXTURES BUTTON
-        ========================================
-        */
-        if (interaction.customId.startsWith('generate_fixtures_')) {
-            const starterId = interaction.customId.split('_')[2];
-
-            if (interaction.user.id !== starterId) {
-                return interaction.reply({
-                    content: '🚫 Only the organizer can use this button.',
-                    ephemeral: true
-                });
-            }
-
-            const settings = await client.db.tournamentSettings.findOne({
-                guildId: interaction.guild.id
-            });
-
-            if (!settings) {
-                return interaction.reply({
-                    content: '❌ Tournament settings not found.',
-                    ephemeral: true
-                });
-            }
-
-            const existingFixtures = await client.db.fixtures.countDocuments({
-                guildId: interaction.guild.id
-            });
-
-            if (existingFixtures > 0) {
-                return interaction.update({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setColor(0xE67E22)
-                            .setTitle('⚠️ FIXTURES ALREADY EXIST')
-                            .setDescription(
-                                `This tournament already has **${existingFixtures}** fixture(s).\n\n` +
-                                `Please clear old fixtures first before auto-generating again.`
-                            )
-                            .setTimestamp()
-                    ],
-                    components: []
-                });
-            }
-
-            const teams = await client.db.teams.find({
-                guildId: interaction.guild.id
-            });
-
-            if (!teams.length) {
-                return interaction.reply({
-                    content: '❌ No teams found.',
-                    ephemeral: true
-                });
-            }
-
-            const homeAway = settings.homeAway || false;
-            const groupCount = settings.groupCount || 0;
-
-            let createdFixtures = [];
-            let nextMatchNumber = await getNextMatchNumber(interaction.guild.id);
-
-            if (groupCount > 0) {
-                const groupKeys = Array.from(
-                    { length: groupCount },
-                    (_, i) => String.fromCharCode(65 + i)
-                );
-
-                for (const group of groupKeys) {
-                    const groupTeams = await client.db.teams.find({
-                        guildId: interaction.guild.id,
-                        groupKey: group
-                    });
-
-                    if (groupTeams.length < 2) continue;
-
-                    const fixtures = generateRoundRobinFixtures({
-                        guildId: interaction.guild.id,
-                        teams: groupTeams.map(team => ({ name: team.name })),
-                        phase: 'group',
-                        roundPrefix: 'Group Matchday',
-                        homeAway,
-                        groupKey: group,
-                        startMatchNumber: nextMatchNumber
-                    });
-
-                    nextMatchNumber += fixtures.length;
-                    createdFixtures.push(...fixtures);
-                }
-            } else {
-                const fixtures = generateRoundRobinFixtures({
-                    guildId: interaction.guild.id,
-                    teams: teams.map(team => ({ name: team.name })),
-                    phase: 'league',
-                    roundPrefix: 'Matchday',
-                    homeAway,
-                    groupKey: null,
-                    startMatchNumber: nextMatchNumber
-                });
-
-                createdFixtures.push(...fixtures);
-            }
-
-            if (!createdFixtures.length) {
-                return interaction.update({
-                    embeds: [
-                        new EmbedBuilder()
-                            .setColor(0xE74C3C)
-                            .setTitle('❌ NO FIXTURES GENERATED')
-                            .setDescription(
-                                'No fixtures could be generated from the current draw/setup.'
-                            )
-                            .setTimestamp()
-                    ],
-                    components: []
-                });
-            }
-
-            await client.db.fixtures.insertMany(createdFixtures);
-
-            return interaction.update({
-                embeds: [
-                    new EmbedBuilder()
-                        .setColor(0x2ECC71)
-                        .setTitle('📅 FIXTURES GENERATED')
-                        .setDescription(
-                            `Successfully created **${createdFixtures.length}** fixture(s).\n\n` +
-                            `🏆 Format: **${groupCount > 0 ? 'Groups + Knockout' : 'League'}**\n` +
-                            `🔁 Home & Away: **${homeAway ? 'Enabled' : 'Disabled'}**`
-                        )
-                        .setTimestamp()
-                ],
-                components: []
-            });
-        }
-
-        /*
-        ========================================
-        MANUAL FIXTURES BUTTON
-        ========================================
-        */
-        if (interaction.customId.startsWith('manual_fixtures_')) {
-            const starterId = interaction.customId.split('_')[2];
-
-            if (interaction.user.id !== starterId) {
-                return interaction.reply({
-                    content: '🚫 Only the organizer can use this button.',
-                    ephemeral: true
-                });
-            }
-
-            return interaction.update({
-                embeds: [
-                    new EmbedBuilder()
-                        .setColor(0x95A5A6)
-                        .setTitle('🛠️ MANUAL FIXTURE MODE SELECTED')
-                        .setDescription(
-                            'Group draw is complete.\n\n' +
-                            'You chose manual scheduling mode for fixtures.'
-                        )
-                        .setTimestamp()
-                ],
-                components: []
-            });
-        }
-    } catch (error) {
-        console.error('❌ interactionCreate button error:', error);
-
-        if (!interaction.replied && !interaction.deferred) {
-            return interaction.reply({
-                content: '❌ Button interaction failed.',
-                ephemeral: true
-            });
-        }
     }
 });
 
@@ -896,141 +562,9 @@ client.on('messageCreate', async (message) => {
 
 /*
 ========================================
-13. HELPER FUNCTIONS FOR DRAW/FIXTURES
+13. LOGIN
 ========================================
 */
-async function getNextMatchNumber(guildId) {
-    const lastFixture = await client.db.fixtures.findOne({ guildId }).sort({ matchNumber: -1 });
-    if (!lastFixture || !lastFixture.matchNumber) return 1;
-    return lastFixture.matchNumber + 1;
-}
-
-function generateRoundRobinFixtures({
-    guildId,
-    teams,
-    phase,
-    roundPrefix,
-    homeAway = false,
-    groupKey = null,
-    startMatchNumber = 1
-}) {
-    const teamList = [...teams];
-
-    if (teamList.length % 2 !== 0) {
-        teamList.push({ name: '__BYE__' });
-    }
-
-    const rounds = [];
-    const totalRounds = teamList.length - 1;
-    const half = teamList.length / 2;
-
-    let rotation = [...teamList];
-
-    for (let round = 0; round < totalRounds; round++) {
-        const pairings = [];
-
-        for (let i = 0; i < half; i++) {
-            const home = rotation[i];
-            const away = rotation[rotation.length - 1 - i];
-
-            if (home.name === '__BYE__' || away.name === '__BYE__') continue;
-
-            pairings.push([home, away]);
-        }
-
-        rounds.push(pairings);
-
-        const fixed = rotation[0];
-        const rest = rotation.slice(1);
-        rest.unshift(rest.pop());
-        rotation = [fixed, ...rest];
-    }
-
-    const fixtures = [];
-    let matchNumber = startMatchNumber;
-
-    for (let roundIndex = 0; roundIndex < rounds.length; roundIndex++) {
-        const roundLabel = `${roundPrefix} ${roundIndex + 1}`;
-
-        for (const [home, away] of rounds[roundIndex]) {
-            fixtures.push({
-                guildId,
-                phase,
-                roundLabel,
-                groupKey,
-                leg: 1,
-                matchNumber: matchNumber++,
-                homeTeam: home.name,
-                awayTeam: away.name,
-                venueType: 'home',
-                venueName: 'Home Ground',
-                scheduledAt: null,
-                status: 'Pending',
-                result: {
-                    home: null,
-                    away: null,
-                    extraTimeHome: null,
-                    extraTimeAway: null,
-                    penaltiesHome: null,
-                    penaltiesAway: null,
-                    winner: ''
-                },
-                aggregateTieKey: null,
-                notes: '',
-                bracket: {
-                    advancesToMatchNumber: null,
-                    slot: ''
-                }
-            });
-
-            if (homeAway) {
-                fixtures.push({
-                    guildId,
-                    phase,
-                    roundLabel: `${roundPrefix} ${roundIndex + 1 + rounds.length}`,
-                    groupKey,
-                    leg: 1,
-                    matchNumber: matchNumber++,
-                    homeTeam: away.name,
-                    awayTeam: home.name,
-                    venueType: 'home',
-                    venueName: 'Home Ground',
-                    scheduledAt: null,
-                    status: 'Pending',
-                    result: {
-                        home: null,
-                        away: null,
-                        extraTimeHome: null,
-                        extraTimeAway: null,
-                        penaltiesHome: null,
-                        penaltiesAway: null,
-                        winner: ''
-                    },
-                    aggregateTieKey: null,
-                    notes: '',
-                    bracket: {
-                        advancesToMatchNumber: null,
-                        slot: ''
-                    }
-                });
-            }
-        }
-    }
-
-    return fixtures;
-}
-
-/*
-========================================
-14. LOGIN
-========================================
-*/
-console.log('TOKEN STATUS:', process.env.DISCORD_TOKEN ? 'Loaded' : 'Missing');
-console.log('TOKEN LENGTH:', process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.length : 0);
-console.log('🚀 Attempting Discord login...');
-
-client.on('debug', console.log);
-
 if (!process.env.DISCORD_TOKEN) {
     console.error('❌ DISCORD_TOKEN is missing in runtime environment');
 } else {
