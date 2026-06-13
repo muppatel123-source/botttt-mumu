@@ -546,6 +546,24 @@ client.on('messageCreate', async (message) => {
         }
     }
 
+    /* ── Football AI: # prefix ── */
+    if (message.content.startsWith('#') && message.content.length > 1) {
+        const question = message.content.slice(1).trim();
+        if (question) {
+            try {
+                const { askFootball } = require('./utils/footballAI');
+                message.channel.sendTyping().catch(() => null);
+                const answer = await askFootball(question);
+                if (answer && answer !== 'NOT_FOOTBALL') {
+                    await message.reply(answer);
+                }
+            } catch (error) {
+                console.error('[footballAI] error:', error);
+            }
+        }
+        return;
+    }
+
     if (!message.content.startsWith(prefix)) return;
 
     const args = message.content.slice(prefix.length).trim().split(/ +/);
