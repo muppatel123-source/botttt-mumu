@@ -1,9 +1,21 @@
+/**
+ * drawBoard.js
+ *
+ * Shared draw board UI builders for tournament draws.
+ * Used by startdraw.js and finishdraw.js.
+ *
+ * Exports: getDrawKey, getValidGroupKeys, buildPublicDrawEmbed,
+ *          buildPublicDrawComponents, updatePublicDrawBoard, sortTeams
+ */
+
 const {
     EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle
 } = require('discord.js');
+
+const { prettyPhase } = require('./displayHelpers');
 
 const DRAW_EMOJI = '🎴';
 
@@ -162,7 +174,7 @@ async function updatePublicDrawBoard(client, session) {
             components: buildPublicDrawComponents(session)
         });
     } catch (error) {
-        console.error('drawBoard.js updatePublicDrawBoard error:', error);
+        console.error('[drawBoard] updatePublicDrawBoard error:', error);
     }
 }
 
@@ -187,18 +199,6 @@ function sortTeams(teams) {
     });
 }
 
-function prettyPhase(phase) {
-    const map = {
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final'
-    };
-
-    return map[phase] || phase;
-}
-
 module.exports = {
     DRAW_EMOJI,
     getDrawKey,
@@ -206,6 +206,5 @@ module.exports = {
     buildPublicDrawEmbed,
     buildPublicDrawComponents,
     updatePublicDrawBoard,
-    sortTeams,
-    prettyPhase
+    sortTeams
 };
