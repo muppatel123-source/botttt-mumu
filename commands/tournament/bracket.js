@@ -1,7 +1,16 @@
-const {
-    SlashCommandBuilder
-} = require('discord.js');
+/**
+ * bracket.js
+ *
+ * View the tournament knockout bracket.
+ * Delegates to generateBracketEmbed from sendbracket.js.
+ *
+ * Usage: .bracket [tournamentKey]
+ * Slash: /bracket key:<key>
+ *
+ * Aliases: viewbracket, ko
+ */
 
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { generateBracketEmbed } = require('./sendbracket');
 
 module.exports = {
@@ -9,6 +18,8 @@ module.exports = {
     description: 'View tournament knockout bracket.',
     usage: '.bracket [tournamentKey]',
     aliases: ['viewbracket', 'ko'],
+    hidden: false,
+    cooldown: 3,
 
     data: new SlashCommandBuilder()
         .setName('bracket')
@@ -19,28 +30,41 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             const key = args[0]?.toLowerCase() || null;
             const embed = await generateBracketEmbed(message.guild.id, key);
             return message.reply({ embeds: [embed] });
         } catch (error) {
-            console.error('bracket prefix error:', error);
+            console.error('[bracket] prefix error:', error);
             return message.reply('❌ Failed to load bracket.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
+            await interaction.deferReply();
+
             const key = interaction.options.getString('key')?.toLowerCase() || null;
             const embed = await generateBracketEmbed(interaction.guild.id, key);
-            return interaction.reply({ embeds: [embed] });
+
+            return interaction.editReply({ embeds: [embed] });
         } catch (error) {
-            console.error('bracket slash error:', error);
-            return interaction.reply({
-                content: '❌ Failed to load bracket.',
-                ephemeral: true
-            });
+            console.error('[bracket] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to load bracket.');
+            }
+
+            return interaction.reply({ content: '❌ Failed to load bracket.', ephemeral: true });
         }
     }
 };

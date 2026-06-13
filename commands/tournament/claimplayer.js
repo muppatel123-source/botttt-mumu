@@ -1,3 +1,16 @@
+/**
+ * claimplayer.js
+ *
+ * Sign a free agent (unregistered or teamless player) to your team.
+ * Captain or Vice Captain only.
+ * Updates global Player record + all active TournamentPlayer entries.
+ *
+ * Usage: .claimplayer @user
+ * Slash: /claimplayer user:<user>
+ *
+ * Aliases: sign, signplayer
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -11,12 +24,14 @@ const {
     TournamentPlayer
 } = require('../../models/Tournament');
 
+const { getUserFromArgs } = require('../../utils/stringHelpers');
+
 module.exports = {
     name: 'claimplayer',
     description: 'Sign a free agent to your team as captain.',
     usage: '.claimplayer @user',
     aliases: ['sign', 'signplayer'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -29,13 +44,15 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message) {
         try {
             if (!message.guild) return;
 
-            const target =
-                message.mentions.users.first() ||
-                await getUserFromArgs(message);
+            const target = message.mentions.users.first() || await getUserFromArgs(message);
 
             if (!target) {
                 return message.reply('❌ Usage: `.claimplayer @user`');
@@ -48,10 +65,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('claimplayer prefix error:', error);
+            console.error('[claimplayer] prefix error:', error);
             return message.reply('❌ Failed to claim player.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -66,7 +87,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('claimplayer slash error:', error);
+            console.error('[claimplayer] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to claim player.');
@@ -80,21 +101,23 @@ module.exports = {
     }
 };
 
-async function runClaimPlayer({
-    guild,
-    actorId,
-    targetUser,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Claim a free agent for the actor's team.
+ * Validates: actor is captain/VC, target is registered and teamless.
+ */
+async function runClaimPlayer({ guild, actorId, targetUser, reply }) {
+    // ── Verify actor is captain/VC ──
     const captainPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: actorId
     }).populate('teamId');
 
     if (!captainPlayer?.teamId) {
-        return reply({
-            content: '❌ You are not linked to any team.'
-        });
+        return reply({ content: '❌ You are not linked to any team.' });
     }
 
     const team = captainPlayer.teamId;
@@ -108,20 +131,17 @@ async function runClaimPlayer({
         captainPlayer.isViceCaptain;
 
     if (!isCaptain && !isViceCaptain) {
-        return reply({
-            content: '❌ Only the team captain or vice captain can claim free agents.'
-        });
+        return reply({ content: '❌ Only the team captain or vice captain can claim free agents.' });
     }
 
+    // ── Find target player ──
     const targetPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: targetUser.id
     });
 
     if (!targetPlayer) {
-        return reply({
-            content: `❌ ${targetUser} is not registered as a player.`
-        });
+        return reply({ content: `❌ ${targetUser} is not registered as a player.` });
     }
 
     if (targetPlayer.teamId) {
@@ -132,42 +152,51 @@ async function runClaimPlayer({
         });
     }
 
+    // ── Update global player record ──
     await Player.updateOne(
         { _id: targetPlayer._id },
         {
             $set: {
                 teamId: team._id,
                 teamNameSnapshot: team.name,
-                isCaptain: false
+                isCaptain: false,
+                isViceCaptain: false
             }
         }
     );
 
+    // ── Update all active tournament entries ──
     const updatedTournamentPlayers = await assignPlayerToActiveTournaments({
         guildId: guild.id,
         playerId: targetPlayer._id,
         team
     });
 
-const embed = new EmbedBuilder()
-    .setColor(0x57F287)
-    .setTitle('✅ Player Signed')
-    .setDescription(`${targetUser} has joined **${team.name}**.`)
-    .setTimestamp();
+    // ── Response ──
+    const embed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setTitle('✅ PLAYER SIGNED')
+        .setDescription(
+            `${targetUser} has joined **${team.name}**.\n\n` +
+            `Tournament records updated: **${updatedTournamentPlayers}**`
+        )
+        .setTimestamp();
 
     return reply({ embeds: [embed] });
 }
 
-async function assignPlayerToActiveTournaments({
-    guildId,
-    playerId,
-    team
-}) {
+/* ====================================================
+   TOURNAMENT SYNC
+==================================================== */
+
+/**
+ * Assign a player to all active tournaments where their team is registered.
+ * Updates TournamentPlayer entries with the new team.
+ */
+async function assignPlayerToActiveTournaments({ guildId, playerId, team }) {
     const activeTournaments = await TournamentSettings.find({
         guildId,
-        currentPhase: {
-            $ne: 'completed'
-        }
+        currentPhase: { $ne: 'completed' }
     }).lean();
 
     let updated = 0;
@@ -194,7 +223,8 @@ async function assignPlayerToActiveTournaments({
                     teamId: team._id,
                     tournamentTeamId: tournamentTeam._id,
                     teamNameSnapshot: team.name,
-                    isCaptain: false
+                    isCaptain: false,
+                    isViceCaptain: false
                 }
             }
         );
@@ -203,11 +233,4 @@ async function assignPlayerToActiveTournaments({
     }
 
     return updated;
-}
-
-async function getUserFromArgs(message) {
-    const rawId = message.content.match(/\d{17,20}/)?.[0];
-    if (!rawId) return null;
-
-    return message.client.users.fetch(rawId).catch(() => null);
 }

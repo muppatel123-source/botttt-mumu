@@ -1,3 +1,16 @@
+/**
+ * moveplayer.js
+ *
+ * Organizer command to directly move a player to a different team.
+ * Cannot move captains — change captain first.
+ * Updates global Player + all active TournamentPlayer entries.
+ *
+ * Usage:  .moveplayer @user <team name>
+ * Slash:  /moveplayer user:<user> team:<team>
+ *
+ * Aliases: mp, forcemoveplayer
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -13,6 +26,7 @@ const {
 } = require('../../models/Tournament');
 
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex, getUserFromArgs } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'moveplayer',
@@ -37,11 +51,15 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
 
-            if (!(await isOrganizer(message.guild, message.author.id))) {
+            if (!(await isOrganizer(message.guild.id, message.author.id))) {
                 return message.reply('🚫 Unauthorized.');
             }
 
@@ -70,18 +88,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('moveplayer prefix error:', error);
+            console.error('[moveplayer] prefix error:', error);
             return message.reply('❌ Failed to move player.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
-            if (!(await isOrganizer(interaction.guild, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+            if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -93,39 +112,42 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('moveplayer slash error:', error);
+            console.error('[moveplayer] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to move player.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to move player.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to move player.', ephemeral: true });
         }
     }
 };
 
-async function runMovePlayer({
-    guild,
-    targetUser,
-    teamName,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Move a player to a new team:
+ * 1. Validate player exists and is not captain
+ * 2. Resolve target team
+ * 3. Update global Player record
+ * 4. Update all active TournamentPlayer entries
+ */
+async function runMovePlayer({ guild, targetUser, teamName, reply }) {
+    /* ── Find player ── */
     const player = await Player.findOne({
         guildId: guild.id,
         discordID: targetUser.id
     }).populate('teamId');
 
     if (!player) {
-        return reply({
-            content: `❌ ${targetUser} is not registered as a player.`
-        });
+        return reply({ content: `❌ ${targetUser} is not registered as a player.` });
     }
 
     const oldTeam = player.teamId || null;
 
+    /* ── Block captain from being moved directly ── */
     if (oldTeam && (player.isCaptain || String(oldTeam.captainID) === String(targetUser.id))) {
         return reply({
             content:
@@ -134,42 +156,41 @@ async function runMovePlayer({
         });
     }
 
+    /* ── Resolve target team ── */
     const newTeam = await Team.findOne({
         guildId: guild.id,
-        name: {
-            $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-        }
+        name: { $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i') }
     });
 
     if (!newTeam) {
-        return reply({
-            content: `❌ Target team not found: \`${teamName}\``
-        });
+        return reply({ content: `❌ Target team not found: \`${teamName}\`` });
     }
 
     if (oldTeam && String(oldTeam._id) === String(newTeam._id)) {
-        return reply({
-            content: `❌ ${targetUser} is already in **${newTeam.name}**.`
-        });
+        return reply({ content: `❌ ${targetUser} is already in **${newTeam.name}**.` });
     }
 
+    /* ── Update global player record ── */
     await Player.updateOne(
         { _id: player._id },
         {
             $set: {
                 teamId: newTeam._id,
                 teamNameSnapshot: newTeam.name,
-                isCaptain: false
+                isCaptain: false,
+                isViceCaptain: false
             }
         }
     );
 
+    /* ── Update active tournament entries ── */
     const updatedTournamentPlayers = await updateActiveTournamentPlayerTeams({
         guildId: guild.id,
         playerId: player._id,
         newTeam
     });
 
+    /* ── Response ── */
     const embed = new EmbedBuilder()
         .setColor(0x57F287)
         .setTitle('✅ Player Moved')
@@ -182,21 +203,18 @@ async function runMovePlayer({
         })
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }
 
-async function updateActiveTournamentPlayerTeams({
-    guildId,
-    playerId,
-    newTeam
-}) {
+/* ====================================================
+   TOURNAMENT SYNC
+==================================================== */
+
+/** Update a player's team across all active tournaments where the new team is registered. */
+async function updateActiveTournamentPlayerTeams({ guildId, playerId, newTeam }) {
     const activeTournaments = await TournamentSettings.find({
         guildId,
-        currentPhase: {
-            $ne: 'completed'
-        }
+        currentPhase: { $ne: 'completed' }
     }).lean();
 
     let updated = 0;
@@ -223,7 +241,8 @@ async function updateActiveTournamentPlayerTeams({
                     teamId: newTeam._id,
                     tournamentTeamId: tournamentTeam._id,
                     teamNameSnapshot: newTeam.name,
-                    isCaptain: false
+                    isCaptain: false,
+                    isViceCaptain: false
                 }
             }
         );
@@ -232,15 +251,4 @@ async function updateActiveTournamentPlayerTeams({
     }
 
     return updated;
-}
-
-async function getUserFromArgs(message) {
-    const rawId = message.content.match(/\d{17,20}/)?.[0];
-    if (!rawId) return null;
-
-    return message.client.users.fetch(rawId).catch(() => null);
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

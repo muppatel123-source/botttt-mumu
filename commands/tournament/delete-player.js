@@ -1,3 +1,15 @@
+/**
+ * delete-player.js
+ *
+ * Remove a global player entirely and deactivate all tournament entries.
+ * Removes tournament player role if configured.
+ *
+ * Usage:  .delete-player @user
+ * Slash:  /delete-player user:<user>
+ *
+ * Aliases: deleteplayer, removeplayer, dp
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -11,6 +23,8 @@ const {
     TournamentSettings
 } = require('../../models/Tournament');
 
+const { getUserFromArgs } = require('../../utils/stringHelpers');
+
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -18,7 +32,7 @@ module.exports = {
     description: 'Remove a global player and deactivate tournament entries.',
     usage: '.delete-player @user',
     aliases: ['deleteplayer', 'removeplayer', 'dp'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -31,7 +45,11 @@ module.exports = {
                 .setRequired(true)
         ),
 
-    async execute(message) {
+    /* ================================================
+       PREFIX
+    ================================================ */
+
+    async execute(message, args) {
         try {
             if (!message.guild) return;
 
@@ -39,7 +57,8 @@ module.exports = {
                 return message.reply('🚫 Unauthorized.');
             }
 
-            const target = message.mentions.users.first();
+            const target = message.mentions.users.first()
+                || await getUserFromArgs(message, args);
 
             if (!target) {
                 return message.reply('❌ Usage: `.delete-player @user`');
@@ -47,22 +66,24 @@ module.exports = {
 
             return await runDeletePlayer({
                 guild: message.guild,
+                targetUser: target,
                 targetUserId: target.id,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('delete-player prefix error:', error);
+            console.error('[delete-player] prefix error:', error);
             return message.reply('❌ Failed to remove player.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -73,34 +94,37 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('delete-player slash error:', error);
+            console.error('[delete-player] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
-                return interaction.editReply({ content: '❌ Failed to remove player.' });
+                return interaction.editReply('❌ Failed to remove player.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to remove player.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to remove player.', ephemeral: true });
         }
     }
 };
 
-async function runDeletePlayer({
-    guild,
-    targetUserId,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Permanently remove a player:
+ * 1. Deactivate all TournamentPlayer entries
+ * 2. Delete the global Player record
+ * 3. Update UserProfile (keep display name)
+ * 4. Remove tournament player role from Discord member
+ */
+async function runDeletePlayer({ guild, targetUserId, reply }) {
+    /* ── Find the player ── */
     const player = await Player.findOne({
         guildId: guild.id,
         discordID: targetUserId
     }).populate('teamId');
 
     if (!player) {
-        return reply({
-            content: '❌ That user is not registered as a player in this server.'
-        });
+        return reply({ content: '❌ That user is not registered as a player in this server.' });
     }
 
     const teamName =
@@ -108,49 +132,32 @@ async function runDeletePlayer({
         player.teamNameSnapshot ||
         'No Team';
 
+    /* ── Deactivate tournament entries ── */
     const tournamentUpdate = await TournamentPlayer.updateMany(
-        {
-            guildId: guild.id,
-            playerId: player._id
-        },
-        {
-            $set: {
-                isActive: false
-            }
-        }
+        { guildId: guild.id, playerId: player._id },
+        { $set: { isActive: false } }
     );
 
-    await Player.deleteOne({
-        _id: player._id
-    });
+    /* ── Delete global player record ── */
+    await Player.deleteOne({ _id: player._id });
 
+    /* ── Preserve display name in UserProfile ── */
     await UserProfile.updateOne(
-        {
-            guildId: guild.id,
-            discordID: targetUserId
-        },
-        {
-            $set: {
-                displayName: player.name
-            }
-        },
-        {
-            upsert: true
-        }
+        { guildId: guild.id, discordID: targetUserId },
+        { $set: { displayName: player.name } },
+        { upsert: true }
     ).catch(() => null);
 
-    const settings = await TournamentSettings.findOne({
-        guildId: guild.id
-    }).catch(() => null);
-
+    /* ── Remove tournament player role from Discord ── */
+    const settings = await TournamentSettings.findOne({ guildId: guild.id }).catch(() => null);
     const targetMember = await guild.members.fetch(targetUserId).catch(() => null);
-
     const roleResult = await tryRemoveRole({
         guild,
         member: targetMember,
         roleId: settings?.tournamentPlayerRoleId || ''
     });
 
+    /* ── Response ── */
     const embed = new EmbedBuilder()
         .setColor(0xE74C3C)
         .setTitle('🗑️ PLAYER REMOVED')
@@ -167,16 +174,15 @@ async function runDeletePlayer({
         })
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }
 
-async function tryRemoveRole({
-    guild,
-    member,
-    roleId
-}) {
+/* ====================================================
+   ROLE HELPERS
+==================================================== */
+
+/** Attempt to remove a role from a member with full permission/hierarchy checks. */
+async function tryRemoveRole({ guild, member, roleId }) {
     if (!roleId) return { status: 'not_configured' };
     if (!member) return { status: 'member_missing' };
 
@@ -184,23 +190,12 @@ async function tryRemoveRole({
     if (!role) return { status: 'role_missing' };
 
     const botMember = guild.members.me;
-    if (!botMember) return { status: 'bot_member_missing', role };
+    if (!botMember) return { status: 'bot_member_missing' };
 
-    if (!botMember.permissions.has('ManageRoles')) {
-        return { status: 'missing_manage_roles', role };
-    }
-
-    if (!member.roles.cache.has(role.id)) {
-        return { status: 'did_not_have_role', role };
-    }
-
-    if (role.managed) {
-        return { status: 'managed_role', role };
-    }
-
-    if (botMember.roles.highest.position <= role.position) {
-        return { status: 'role_too_high', role };
-    }
+    if (!botMember.permissions.has('ManageRoles')) return { status: 'missing_manage_roles' };
+    if (role.managed) return { status: 'managed_role' };
+    if (botMember.roles.highest.position <= role.position) return { status: 'role_too_high' };
+    if (!member.roles.cache.has(role.id)) return { status: 'did_not_have_role' };
 
     try {
         await member.roles.remove(role);
@@ -210,29 +205,20 @@ async function tryRemoveRole({
     }
 }
 
+/** Human-readable status for the role removal attempt. */
 function buildRoleRemovalStatus(result) {
-    switch (result.status) {
-        case 'removed':
-            return `Removed automatically: <@&${result.role.id}>`;
-        case 'did_not_have_role':
-            return 'User did not have role';
-        case 'not_configured':
-            return 'Not configured';
-        case 'role_missing':
-            return 'Configured role no longer exists';
-        case 'missing_manage_roles':
-            return 'Bot lacks Manage Roles permission';
-        case 'role_too_high':
-            return 'Role is above bot role';
-        case 'managed_role':
-            return 'Managed role cannot be removed';
-        case 'member_missing':
-            return 'Member not found';
-        case 'bot_member_missing':
-            return 'Bot member missing';
-        case 'remove_failed':
-            return 'Failed to remove role';
-        default:
-            return 'Unknown';
-    }
+    const messages = {
+        removed: `Removed automatically: <@&${result.role.id}>`,
+        did_not_have_role: 'User did not have role',
+        not_configured: 'Not configured',
+        role_missing: 'Configured role no longer exists',
+        missing_manage_roles: 'Bot lacks Manage Roles permission',
+        role_too_high: 'Role is above bot role',
+        managed_role: 'Managed role cannot be removed',
+        member_missing: 'Member not found',
+        bot_member_missing: 'Bot member missing',
+        remove_failed: 'Failed to remove role'
+    };
+
+    return messages[result.status] || 'Unknown';
 }

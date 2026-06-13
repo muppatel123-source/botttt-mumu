@@ -1,3 +1,15 @@
+/**
+ * nextmatch.js
+ *
+ * Shows a paginated team schedule with next match info.
+ * Supports tournament switching and page navigation.
+ *
+ * Usage:  .nm [team name]
+ * Slash:  /nextmatch team:<name>
+ *
+ * Aliases: nm, fixtures, schedule
+ */
+
 const {
     EmbedBuilder,
     SlashCommandBuilder,
@@ -20,12 +32,18 @@ const {
     getTournamentByKey
 } = require('../../utils/getTournament');
 
+const { prettyPhase } = require('../../utils/displayHelpers');
+const { escapeRegex } = require('../../utils/stringHelpers');
+
 const PAGE_SIZE = 4;
 
 module.exports = {
     name: 'nextmatch',
     aliases: ['nm', 'fixtures', 'schedule'],
     description: 'Shows a paginated team schedule with next match info.',
+    usage: '.nm [team name]',
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('nextmatch')
@@ -35,6 +53,10 @@ module.exports = {
                 .setDescription('Optional team name')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -47,10 +69,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('nextmatch prefix error:', error);
+            console.error('[nextmatch] prefix error:', error);
             return message.reply('❌ Failed to load fixtures.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -63,7 +89,7 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('nextmatch slash error:', error);
+            console.error('[nextmatch] slash error:', error);
 
             if (interaction.replied || interaction.deferred) {
                 return interaction.editReply({ content: '❌ Failed to load fixtures.' });
@@ -164,7 +190,7 @@ async function runNextMatch({
                 components: buildComponents(state)
             });
         } catch (error) {
-            console.error('nextmatch collector error:', error);
+            console.error('[nextmatch] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({
@@ -420,20 +446,7 @@ function buildFixtureLine(fixture, index, teamName) {
     );
 }
 
-function prettyPhase(phase) {
-    const map = {
-        league: 'League',
-        group: 'Group Stage',
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final',
-        custom: 'Custom'
-    };
 
-    return map[phase] || phase || 'Fixture';
-}
 
 function parseColor(color) {
     if (!color) return 0xFEBE10;
@@ -452,6 +465,3 @@ function truncate(text, max) {
     return value.length > max ? value.slice(0, max - 3) + '...' : value;
 }
 
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-}

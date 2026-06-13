@@ -1,52 +1,55 @@
-const { Fixture } = require('../../models/Tournament');
+/**
+ * addfixtures.js
+ *
+ * RETIRED — Legacy bulk fixture command.
+ * Use /autofixtures or /generatestage instead.
+ */
+
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 
 module.exports = {
     name: 'addfixtures',
-    description: 'Bulk add fixtures for a matchday. Supports multi-word names.',
+    description: 'Legacy command retired. Use /autofixtures or /generatestage instead.',
     hidden: true,
-    
-    async execute(message, args) {
-        // 🔒 Authorization Check
-        const auth = ["860525870804631592", "1487768789570556064", "856556430370930738"];
-        if (!auth.includes(message.author.id)) return;
+    cooldown: 3,
 
-        // 📝 Usage: .addfixtures <Group> <Matchday> Team 1 vs Team 2, Team 3 vs Team 4
-        const group = parseInt(args[0]);
-        const matchday = parseInt(args[1]);
-        
-        if (isNaN(group) || isNaN(matchday)) {
-            return message.reply("❓ **Usage:** `.addfixtures <Group> <Matchday> Team A vs Team B, Team C vs Team D`\n*Example: .addfixtures 1 1 Real Madrid vs Barcelona, Matrix FC vs Falcons*");
-        }
+    data: new SlashCommandBuilder()
+        .setName('addfixtures')
+        .setDescription('Legacy command retired. Use /autofixtures or /generatestage instead.'),
 
-        // Join remaining args and split by comma to get each match string
-        const matchStrings = args.slice(2).join(' ').split(',');
+    async execute(message) {
+        return sendRetiredMessage({
+            reply: payload => message.reply(payload)
+        });
+    },
 
-        const fixtureData = [];
-        for (let str of matchStrings) {
-            // Split by "vs" (case-insensitive)
-            const teams = str.split(/\s+vs\s+/i);
-            if (teams.length === 2) {
-                fixtureData.push({
-                    guildId: message.guild.id,
-                    group: group,
-                    matchday: matchday,
-                    team1: teams[0].trim(),
-                    team2: teams[1].trim(),
-                    status: 'Pending'
-                });
-            }
-        }
-
-        if (fixtureData.length === 0) {
-            return message.reply("❌ **No valid fixtures found.** Make sure to use `vs` between teams and a comma `,` between matches.");
-        }
-
-        try {
-            await Fixture.insertMany(fixtureData);
-            message.reply(`✅ Successfully added **${fixtureData.length}** fixtures for Matchday **${matchday}** (Group ${group}).`);
-        } catch (err) {
-            console.error(err);
-            message.reply("❌ **Database Error** while saving fixtures.");
-        }
+    async slashExecute(interaction) {
+        return sendRetiredMessage({
+            reply: payload => interaction.reply({ ...payload, ephemeral: true })
+        });
     }
 };
+
+/**
+ * Send the retirement notice with alternatives.
+ */
+function sendRetiredMessage({ reply }) {
+    const embed = new EmbedBuilder()
+        .setColor(0xF39C12)
+        .setTitle('♻️ LEGACY COMMAND RETIRED')
+        .setDescription(
+            '**/addfixtures** is no longer used.\n\n' +
+            'Use the new fixture generation commands instead:\n\n' +
+            '**Automatic fixture generation**\n' +
+            '`/autofixtures <tournamentKey>`\n\n' +
+            '**Stage-based generation**\n' +
+            '`/generatestage stage:league` — League round-robin\n' +
+            '`/generatestage stage:group` — Group stage\n' +
+            '`/generatestage stage:knockout` — Knockout brackets\n\n' +
+            '**Manual single fixture**\n' +
+            '`/forcefixture`'
+        )
+        .setTimestamp();
+
+    return reply({ embeds: [embed] });
+}

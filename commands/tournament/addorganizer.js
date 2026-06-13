@@ -1,3 +1,13 @@
+/**
+ * addorganizer.js
+ *
+ * Add a server organizer. Bot owners only.
+ * Updates the ServerConfig document for the guild.
+ *
+ * Usage: .addorganizer @user
+ * Slash: /addorganizer user:<user>
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder
@@ -5,13 +15,14 @@ const {
 
 const { ServerConfig } = require('../../models/Tournament');
 const { OWNER_IDS } = require('../../utils/isOrganizer');
+const { getUserFromArgs } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'addorganizer',
     description: 'Add a server organizer.',
     usage: '.addorganizer @user',
     aliases: ['setorganizer', 'organizeradd'],
-    hidden: true,
+    hidden: false,
     cooldown: 3,
 
     data: new SlashCommandBuilder()
@@ -22,6 +33,10 @@ module.exports = {
                 .setDescription('User to promote')
                 .setRequired(true)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message) {
         try {
@@ -45,10 +60,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('addorganizer prefix error:', error);
+            console.error('[addorganizer] prefix error:', error);
             return message.reply('❌ Failed to add organizer.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -59,17 +78,19 @@ module.exports = {
                 });
             }
 
+            await interaction.deferReply({ ephemeral: true });
+
             const user = interaction.options.getUser('user');
 
             return await processOrganizer({
                 guildId: interaction.guild.id,
                 user,
-                reply: payload => interaction.reply(payload)
+                reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('addorganizer slash error:', error);
+            console.error('[addorganizer] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
+            if (interaction.deferred || interaction.replied) {
                 return interaction.editReply({ content: '❌ Failed to add organizer.' });
             }
 
@@ -81,6 +102,14 @@ module.exports = {
     }
 };
 
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Add a user to the server's organizer list.
+ * Creates ServerConfig if it doesn't exist (upsert).
+ */
 async function processOrganizer({ guildId, user, reply }) {
     const config = await ServerConfig.findOneAndUpdate(
         { guildId },
@@ -103,15 +132,4 @@ async function processOrganizer({ guildId, user, reply }) {
         .setTimestamp();
 
     return reply({ embeds: [embed] });
-}
-
-async function getUserFromArgs(message) {
-    const rawId = message.content.match(/\d{17,20}/)?.[0];
-    if (!rawId) return null;
-
-    try {
-        return await message.client.users.fetch(rawId);
-    } catch {
-        return null;
-    }
 }

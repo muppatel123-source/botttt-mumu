@@ -1,3 +1,15 @@
+/**
+ * forcefixture.js
+ *
+ * Force-change a fixture's status (Pending, Live, Played, Cancelled).
+ * Use with caution — does not trigger any stat/standing updates.
+ *
+ * Usage:  .forcefixture [key] match=<number> status=<Pending|Live|Played|Cancelled>
+ * Slash:  /forcefixture match:<number> status:<status> [key]
+ *
+ * Aliases: setfixturestatus
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -5,12 +17,7 @@ const {
 } = require('discord.js');
 
 const { Fixture } = require('../../models/Tournament');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -47,6 +54,10 @@ module.exports = {
                 )
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -64,18 +75,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('forcefixture prefix error:', error);
+            console.error('[forcefixture] prefix error:', error);
             return message.reply('❌ Failed to force fixture status.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -88,27 +100,24 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('forcefixture slash error:', error);
+            console.error('[forcefixture] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to force fixture status.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to force fixture status.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to force fixture status.', ephemeral: true });
         }
     }
 };
 
-async function runForceFixture({
-    guild,
-    key,
-    matchNumber,
-    status,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/** Force-set a fixture's status field. Does NOT trigger stat/standing cascades. */
+async function runForceFixture({ guild, key, matchNumber, status, reply }) {
+    /* ── Resolve tournament ── */
     const tournament = key
         ? await getTournamentByKey(guild.id, key)
         : await getDefaultTournament(guild.id);
@@ -117,6 +126,7 @@ async function runForceFixture({
         return reply({ content: '❌ Tournament not found.' });
     }
 
+    /* ── Find fixture ── */
     const fixture = await Fixture.findOne({
         guildId: guild.id,
         tournamentId: tournament._id,
@@ -129,9 +139,11 @@ async function runForceFixture({
         });
     }
 
+    /* ── Apply status change ── */
     fixture.status = status;
     await fixture.save();
 
+    /* ── Response ── */
     const embed = new EmbedBuilder()
         .setColor(0xF39C12)
         .setTitle('🛠️ FIXTURE STATUS FORCED')
@@ -147,6 +159,11 @@ async function runForceFixture({
     return reply({ embeds: [embed] });
 }
 
+/* ====================================================
+   PREFIX ARG PARSER
+==================================================== */
+
+/** Parse prefix args: [key] match=<num> status=<status> */
 function parsePrefixArgs(args) {
     let key = null;
     let matchNumber = null;

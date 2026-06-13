@@ -1,14 +1,22 @@
+/**
+ * canceldraw.js
+ *
+ * Cancel an active draw session. Only the organizer who started it
+ * can cancel (unless --force is used by another organizer).
+ *
+ * Usage: .canceldraw [--force]
+ * Slash: /canceldraw force:<bool>
+ *
+ * Aliases: abortdraw, stopdraw
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    getDrawKey,
-    updatePublicDrawBoard
-} = require('../../utils/drawBoard');
-
+const { getDrawKey, updatePublicDrawBoard } = require('../../utils/drawBoard');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
@@ -16,7 +24,7 @@ module.exports = {
     description: 'Cancel the active draw session.',
     usage: '.canceldraw [--force]',
     aliases: ['abortdraw', 'stopdraw'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -28,6 +36,10 @@ module.exports = {
                 .setDescription('Allow a different organizer to cancel the draw')
                 .setRequired(false)
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -47,18 +59,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('canceldraw prefix error:', error);
+            console.error('[canceldraw] prefix error:', error);
             return message.reply('❌ Failed to cancel draw.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -71,36 +84,34 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('canceldraw slash error:', error);
+            console.error('[canceldraw] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to cancel draw.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to cancel draw.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to cancel draw.', ephemeral: true });
         }
     }
 };
 
-async function runCancelDraw({
-    client,
-    guild,
-    userId,
-    force,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Cancel the active draw session for this guild.
+ * Validates ownership, updates the public board, disables buttons.
+ */
+async function runCancelDraw({ client, guild, userId, force, reply }) {
     const drawKey = getDrawKey(guild.id);
     const session = client.liveSettings.get(drawKey);
 
     if (!session || session.type !== 'manual_draw') {
-        return reply({
-            content: '❌ No active draw session found.'
-        });
+        return reply({ content: '❌ No active draw session found.' });
     }
 
+    // ── Ownership check ──
     if (session.startedBy !== userId && !force) {
         return reply({
             content:
@@ -109,15 +120,18 @@ async function runCancelDraw({
         });
     }
 
+    // ── Mark session as cancelled ──
     session.status = 'cancelled';
     session.cancelledAt = Date.now();
     session.cancelledBy = userId;
 
+    // ── Update public board and disable buttons ──
     await updatePublicDrawBoard(client, session).catch(() => null);
     await disableBoardButtons(client, session).catch(() => null);
 
     client.liveSettings.delete(drawKey);
 
+    // ── Response ──
     const embed = new EmbedBuilder()
         .setColor(0xE74C3C)
         .setTitle('🛑 DRAW CANCELLED')
@@ -128,11 +142,16 @@ async function runCancelDraw({
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }
 
+/* ====================================================
+   BOARD CLEANUP
+==================================================== */
+
+/**
+ * Disable all buttons on the public draw board message.
+ */
 async function disableBoardButtons(client, session) {
     if (!session.boardChannelId || !session.boardMessageId) return;
 
@@ -142,19 +161,13 @@ async function disableBoardButtons(client, session) {
     const msg = await channel.messages.fetch(session.boardMessageId).catch(() => null);
     if (!msg) return;
 
-    const disabledComponents = msg.components.map(row => {
-        const newRow = {
-            type: 1,
-            components: row.components.map(component => ({
-                ...component.data,
-                disabled: true
-            }))
-        };
+    const disabledComponents = msg.components.map(row => ({
+        type: 1,
+        components: row.components.map(component => ({
+            ...component.data,
+            disabled: true
+        }))
+    }));
 
-        return newRow;
-    });
-
-    await msg.edit({
-        components: disabledComponents
-    }).catch(() => null);
+    await msg.edit({ components: disabledComponents }).catch(() => null);
 }

@@ -1,20 +1,34 @@
+/**
+ * advanceknockout.js
+ *
+ * Advance knockout winners from one round to the next.
+ * Reads all fixtures from currentPhase, determines winners,
+ * creates fixtures for nextPhase.
+ *
+ * Usage: .advanceknockout [tournamentKey] <currentPhase> <nextPhase>
+ * Slash: /advanceknockout current_phase:<phase> next_phase:<phase> key:<key>
+ *
+ * Aliases: advanceko, nextknockout
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    Fixture,
-    TournamentTeam
-} = require('../../models/Tournament');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { Fixture, TournamentTeam } = require('../../models/Tournament');
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+
+/** Human-readable phase labels */
+const PHASE_LABELS = {
+    qualifier: 'Qualifier',
+    eliminator: 'Eliminator',
+    quarterfinal: 'Quarter Final',
+    semifinal: 'Semi Final',
+    final: 'Final'
+};
 
 module.exports = {
     name: 'advanceknockout',
@@ -56,6 +70,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -65,9 +83,7 @@ module.exports = {
             }
 
             if (args.length < 2) {
-                return message.reply(
-                    '❌ Usage: `.advanceknockout [tournamentKey] <currentPhase> <nextPhase>`'
-                );
+                return message.reply('❌ Usage: `.advanceknockout [tournamentKey] <currentPhase> <nextPhase>`');
             }
 
             let key = null;
@@ -89,18 +105,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('advanceknockout prefix error:', error);
+            console.error('[advanceknockout] prefix error:', error);
             return message.reply('❌ Failed to advance knockout stage.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -113,76 +130,78 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('advanceknockout slash error:', error);
+            console.error('[advanceknockout] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
+            if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to advance knockout.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to advance knockout.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to advance knockout.', ephemeral: true });
         }
     }
 };
 
-async function runAdvance({
-    guild,
-    key,
-    currentPhase,
-    nextPhase,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Advance winners from currentPhase into nextPhase fixtures.
+ *
+ * Steps:
+ * 1. Find all fixtures for the current phase
+ * 2. Verify all are played
+ * 3. Verify next phase doesn't already exist
+ * 4. Determine all winners
+ * 5. Create paired fixtures for the next phase
+ * 6. Update tournament's currentPhase
+ */
+async function runAdvance({ guild, key, currentPhase, nextPhase, reply }) {
+    // ── Resolve tournament ──
     const tournament = key
         ? await getTournamentByKey(guild.id, key, { includeCompleted: true })
         : await getDefaultTournament(guild.id, { includeCompleted: true });
 
     if (!tournament) {
-        return reply({
-            content: '❌ Tournament not found.'
-        });
+        return reply({ content: '❌ Tournament not found.' });
     }
 
+    // ── Fetch current phase fixtures ──
     const fixtures = await Fixture.find({
         guildId: guild.id,
         tournamentId: tournament._id,
         phase: currentPhase
-    }).sort({
-        matchNumber: 1,
-        leg: 1
-    });
+    }).sort({ matchNumber: 1, leg: 1 });
 
     if (!fixtures.length) {
-        return reply({
-            content: `❌ No fixtures found for phase \`${currentPhase}\`.`
-        });
+        return reply({ content: `❌ No fixtures found for phase \`${currentPhase}\`.` });
     }
 
-    const unplayed = fixtures.filter(fixture => fixture.status !== 'Played');
+    // ── Verify all fixtures are played ──
+    const unplayed = fixtures.filter(f => f.status !== 'Played');
 
     if (unplayed.length) {
         return reply({
-            content:
-                `❌ ${unplayed.length} fixture(s) are still not completed in ` +
-                `\`${currentPhase}\`.`
+            content: `❌ ${unplayed.length} fixture(s) in \`${currentPhase}\` are still not completed.`
         });
     }
 
-    const existingNextRound = await Fixture.countDocuments({
+    // ── Verify next phase doesn't already exist ──
+    const existingNext = await Fixture.countDocuments({
         guildId: guild.id,
         tournamentId: tournament._id,
         phase: nextPhase
     });
 
-    if (existingNextRound > 0) {
+    if (existingNext > 0) {
         return reply({
             content:
                 `❌ \`${nextPhase}\` fixtures already exist for this tournament.\n` +
-                `Delete/reset them first if you want to regenerate.`
+                'Delete/reset them first if you want to regenerate.'
         });
     }
 
+    // ── Determine winners ──
     const winners = [];
 
     for (const fixture of fixtures) {
@@ -192,7 +211,7 @@ async function runAdvance({
             return reply({
                 content:
                     `❌ Could not determine winner for fixture #${fixture.matchNumber}.\n` +
-                    `If it was a draw, penalties must be saved first.`
+                    'If it was a draw, penalties must be saved first.'
             });
         }
 
@@ -202,29 +221,29 @@ async function runAdvance({
     const uniqueWinners = dedupeWinners(winners);
 
     if (uniqueWinners.length < 2) {
-        return reply({
-            content: '❌ Not enough winners to create the next round.'
-        });
+        return reply({ content: '❌ Not enough winners to create the next round.' });
     }
 
     if (uniqueWinners.length % 2 !== 0) {
         return reply({
-            content:
-                `❌ Winner count is odd (**${uniqueWinners.length}**). ` +
-                'Cannot generate next round properly.'
+            content: `❌ Winner count is odd (**${uniqueWinners.length}**). Cannot generate next round properly.`
         });
     }
 
+    // ── Get starting match number (single query) ──
+    const latestFixture = await Fixture.findOne({
+        guildId: guild.id,
+        tournamentId: tournament._id
+    }).sort({ matchNumber: -1 }).select('matchNumber');
+
+    let matchNumber = latestFixture ? Number(latestFixture.matchNumber || 0) + 1 : 1;
+
+    // ── Create next round fixtures ──
     const createdFixtures = [];
 
     for (let i = 0; i < uniqueWinners.length; i += 2) {
         const home = uniqueWinners[i];
         const away = uniqueWinners[i + 1];
-
-        const matchNumber = await getNextMatchNumber(
-            guild.id,
-            tournament._id
-        );
 
         const fixture = await Fixture.create({
             guildId: guild.id,
@@ -232,10 +251,10 @@ async function runAdvance({
             tournamentKey: tournament.tournamentKey,
 
             phase: nextPhase,
-            roundLabel: getRoundLabel(nextPhase),
+            roundLabel: PHASE_LABELS[nextPhase] || nextPhase,
             groupKey: null,
             leg: 1,
-            matchNumber,
+            matchNumber: matchNumber++,
 
             homeTeam: home.team.name,
             awayTeam: away.team.name,
@@ -246,9 +265,7 @@ async function runAdvance({
             homeTournamentTeamId: home.entry._id,
             awayTournamentTeamId: away.entry._id,
 
-            venueType: nextPhase === 'final' && tournament.finalNeutralVenue
-                ? 'neutral'
-                : 'home',
+            venueType: nextPhase === 'final' && tournament.finalNeutralVenue ? 'neutral' : 'home',
             venueName: nextPhase === 'final' && tournament.finalNeutralVenue
                 ? 'Neutral Venue'
                 : `${home.team.name} Stadium`,
@@ -257,66 +274,63 @@ async function runAdvance({
             status: 'Pending',
 
             result: {
-                home: null,
-                away: null,
-                extraTimeHome: null,
-                extraTimeAway: null,
-                penaltiesHome: null,
-                penaltiesAway: null,
+                home: null, away: null,
+                extraTimeHome: null, extraTimeAway: null,
+                penaltiesHome: null, penaltiesAway: null,
                 winner: ''
             },
 
             aggregateTieKey: null,
             notes: '',
-            bracket: {
-                advancesToMatchNumber: null,
-                slot: ''
-            }
+            bracket: { advancesToMatchNumber: null, slot: '' }
         });
 
         createdFixtures.push(fixture);
     }
 
+    // ── Update tournament phase ──
     tournament.currentPhase = nextPhase;
     await tournament.save();
 
+    // ── Response ──
     const embed = new EmbedBuilder()
         .setColor(0x57F287)
         .setTitle('🏆 KNOCKOUT ADVANCED')
         .setDescription(
             `${tournament.emoji || '🏆'} Tournament: **${tournament.name}**\n` +
             `Key: \`${tournament.tournamentKey}\`\n\n` +
-            `Advanced From: **${prettyPhase(currentPhase)}**\n` +
-            `Advanced To: **${prettyPhase(nextPhase)}**`
+            `Advanced From: **${PHASE_LABELS[currentPhase] || currentPhase}**\n` +
+            `Advanced To: **${PHASE_LABELS[nextPhase] || nextPhase}**`
         )
         .addFields(
             {
                 name: 'Winners',
-                value: uniqueWinners
-                    .map(winner => `• ${winner.team.name}`)
-                    .join('\n'),
+                value: uniqueWinners.map(w => `• ${w.team.name}`).join('\n'),
                 inline: false
             },
             {
                 name: 'New Fixtures Created',
                 value: createdFixtures.length
-                    ? createdFixtures
-                        .map(fixture =>
-                            `#${fixture.matchNumber} • ${fixture.homeTeam} vs ${fixture.awayTeam}`
-                        )
-                        .join('\n')
+                    ? createdFixtures.map(f => `#${f.matchNumber} • ${f.homeTeam} vs ${f.awayTeam}`).join('\n')
                     : 'None',
                 inline: false
             }
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }
 
+/* ====================================================
+   WINNER DETERMINATION
+==================================================== */
+
+/**
+ * Determine the winner of a played fixture.
+ * Checks explicit winner field, then score comparison, then penalties.
+ */
 async function determineWinner(fixture) {
+    // ── Explicit winner field ──
     if (fixture.result?.winner) {
         return findWinnerEntryByName(fixture, fixture.result.winner);
     }
@@ -334,15 +348,11 @@ async function determineWinner(fixture) {
         winnerTournamentTeamId = fixture.awayTournamentTeamId;
         winnerTeamId = fixture.awayTeamId;
     } else {
+        // ── Check penalties for draws ──
         const homePens = fixture.result?.penaltiesHome;
         const awayPens = fixture.result?.penaltiesAway;
 
-        if (
-            homePens === null ||
-            awayPens === null ||
-            typeof homePens === 'undefined' ||
-            typeof awayPens === 'undefined'
-        ) {
+        if (homePens == null || awayPens == null) {
             return null;
         }
 
@@ -357,18 +367,13 @@ async function determineWinner(fixture) {
         }
     }
 
-    return findWinnerEntry({
-        fixture,
-        winnerTournamentTeamId,
-        winnerTeamId
-    });
+    return findWinnerEntry({ fixture, winnerTournamentTeamId, winnerTeamId });
 }
 
-async function findWinnerEntry({
-    fixture,
-    winnerTournamentTeamId,
-    winnerTeamId
-}) {
+/**
+ * Find a winner's TournamentTeam + Team entry by their IDs.
+ */
+async function findWinnerEntry({ fixture, winnerTournamentTeamId, winnerTeamId }) {
     let entry = null;
 
     if (winnerTournamentTeamId) {
@@ -389,83 +394,43 @@ async function findWinnerEntry({
 
     if (!entry?.teamId) return null;
 
-    return {
-        entry,
-        team: entry.teamId
-    };
+    return { entry, team: entry.teamId };
 }
 
+/**
+ * Find a winner's entry by matching their team name.
+ * Falls back to findWinnerEntry for the actual DB lookup.
+ */
 async function findWinnerEntryByName(fixture, winnerName) {
     const cleanWinner = String(winnerName || '').trim().toLowerCase();
 
     if (!cleanWinner) return null;
 
-    const winnerIsHome =
-        String(fixture.homeTeam || '').trim().toLowerCase() === cleanWinner;
+    const isHome = String(fixture.homeTeam || '').trim().toLowerCase() === cleanWinner;
+    const isAway = String(fixture.awayTeam || '').trim().toLowerCase() === cleanWinner;
 
-    const winnerIsAway =
-        String(fixture.awayTeam || '').trim().toLowerCase() === cleanWinner;
-
-    if (!winnerIsHome && !winnerIsAway) return null;
+    if (!isHome && !isAway) return null;
 
     return findWinnerEntry({
         fixture,
-        winnerTournamentTeamId: winnerIsHome
-            ? fixture.homeTournamentTeamId
-            : fixture.awayTournamentTeamId,
-        winnerTeamId: winnerIsHome
-            ? fixture.homeTeamId
-            : fixture.awayTeamId
+        winnerTournamentTeamId: isHome ? fixture.homeTournamentTeamId : fixture.awayTournamentTeamId,
+        winnerTeamId: isHome ? fixture.homeTeamId : fixture.awayTeamId
     });
 }
 
+/**
+ * Remove duplicate winners (by TournamentTeam ID).
+ */
 function dedupeWinners(winners) {
     const seen = new Set();
     const unique = [];
 
     for (const winner of winners) {
         const key = String(winner.entry._id);
-
         if (seen.has(key)) continue;
-
         seen.add(key);
         unique.push(winner);
     }
 
     return unique;
-}
-
-async function getNextMatchNumber(guildId, tournamentId) {
-    const latest = await Fixture.findOne({
-        guildId,
-        tournamentId
-    })
-        .sort({ matchNumber: -1 })
-        .select('matchNumber');
-
-    return latest ? Number(latest.matchNumber || 0) + 1 : 1;
-}
-
-function getRoundLabel(phase) {
-    const map = {
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final'
-    };
-
-    return map[phase] || phase;
-}
-
-function prettyPhase(phase) {
-    const map = {
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final'
-    };
-
-    return map[phase] || phase;
 }

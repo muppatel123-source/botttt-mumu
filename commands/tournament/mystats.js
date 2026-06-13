@@ -1,3 +1,18 @@
+/**
+ * mystats.js
+ *
+ * View player stats with interactive views:
+ * - Tournament Stats (per-tournament)
+ * - All-Time Stats (career totals from UserProfile)
+ * - Trophies (all trophies won)
+ * - Awards (special awards like Ballon d'Or, Golden Boot, etc.)
+ *
+ * Usage:  .mystats [@user/userId]
+ * Slash:  /mystats [user]
+ *
+ * Aliases: statsme, playerstats, stats, s
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -21,6 +36,9 @@ const {
     getTournamentByKey
 } = require('../../utils/getTournament');
 
+const { getUserFromArgs } = require('../../utils/stringHelpers');
+const { truncate, parseColor } = require('../../utils/displayHelpers');
+
 const DEFAULT_TROPHY_EMOJI = '<:_Trophy:1507987705311793152>';
 
 module.exports = {
@@ -28,6 +46,8 @@ module.exports = {
     description: 'View your player stats.',
     usage: '.mystats [@user/userId]',
     aliases: ['statsme', 'playerstats', 'stats', 's'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('mystats')
@@ -38,11 +58,15 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args = []) {
         try {
             if (!message.guild) return;
 
-            const target = await resolvePrefixTarget(message, args);
+            const target = await resolvePrefixTarget(message, args) || message.author;
 
             return await runMyStats({
                 guild: message.guild,
@@ -55,10 +79,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('mystats prefix error:', error);
+            console.error('[mystats] prefix error:', error);
             return message.reply('❌ Failed to load player stats.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -75,58 +103,46 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('mystats slash error:', error);
+            console.error('[mystats] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
-                return interaction.editReply({ content: '❌ Failed to load player stats.' });
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to load player stats.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to load player stats.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to load player stats.', ephemeral: true });
         }
     }
 };
 
-async function resolvePrefixTarget(message, args = []) {
-    /*
-        Important:
-        - Do NOT read replied message author.
-        - Only use explicit mention or explicit ID from command args.
-        - If no mention/ID is provided, show command author's stats.
-    */
+/* ====================================================
+   TARGET RESOLUTION (PREFIX)
+==================================================== */
 
+/**
+ * Resolve the target user from prefix args.
+ * Supports @mention, raw Discord ID, and Discord username lookup.
+ * Falls back to message.author if no target specified.
+ */
+async function resolvePrefixTarget(message, args = []) {
+    /* ── Try @mention ── */
     const mentionedUser = message.mentions.users.first();
     if (mentionedUser) return mentionedUser;
 
-    const rawId = args
-        .map(arg => String(arg || '').replace(/[<@!>]/g, '').trim())
-        .find(arg => /^\d{17,20}$/.test(arg));
-
-    if (rawId) {
-        const fetched = await message.client.users.fetch(rawId).catch(() => null);
-        if (fetched) return fetched;
-
-        return {
-            id: rawId,
-            tag: rawId,
-            username: rawId,
-            displayAvatarURL: null
-        };
+    /* ── Try getUserFromArgs (ID + username) ── */
+    if (args.length) {
+        const resolved = await getUserFromArgs(message, args);
+        if (resolved) return resolved;
     }
 
-    return message.author;
+    /* ── Fallback: self ── */
+    return null;
 }
 
-async function runMyStats({
-    guild,
-    targetUserId,
-    fallbackTag,
-    fallbackAvatar,
-    viewerId,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+async function runMyStats({ guild, targetUserId, fallbackTag, fallbackAvatar, viewerId, reply }) {
     const globalPlayer = await Player.findOne({
         guildId: guild.id,
         discordID: targetUserId
@@ -136,18 +152,12 @@ async function runMyStats({
         return reply({ content: '❌ No player profile found.' });
     }
 
-    const tournaments = await getSelectableTournaments(guild.id, {
-        includeCompleted: true
-    });
-
+    const tournaments = await getSelectableTournaments(guild.id, { includeCompleted: true });
     if (!tournaments.length) {
         return reply({ content: '❌ No tournaments found.' });
     }
 
-    let tournament = await getDefaultTournament(guild.id, {
-        includeCompleted: true
-    });
-
+    let tournament = await getDefaultTournament(guild.id, { includeCompleted: true });
     if (!tournament) tournament = tournaments[0];
 
     let view = 'tournament';
@@ -166,30 +176,23 @@ async function runMyStats({
 
     if (!msg?.createMessageComponentCollector) return;
 
-    const collector = msg.createMessageComponentCollector({
-        time: 600000
-    });
+    const collector = msg.createMessageComponentCollector({ time: 600000 });
 
     collector.on('collect', async interaction => {
         try {
             if (interaction.user.id !== viewerId) {
-                return interaction.reply({
-                    content: 'Not your menu.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: 'Not your menu.', ephemeral: true });
             }
 
-            if (interaction.isStringSelectMenu()) {
-                if (interaction.customId === 'mystats_tournament') {
-                    const selectedTournament = await getTournamentByKey(
-                        guild.id,
-                        interaction.values[0],
-                        { includeCompleted: true }
-                    );
+            if (interaction.isStringSelectMenu() && interaction.customId === 'mystats_tournament') {
+                const selectedTournament = await getTournamentByKey(
+                    guild.id,
+                    interaction.values[0],
+                    { includeCompleted: true }
+                );
 
-                    if (selectedTournament) tournament = selectedTournament;
-                    view = 'tournament';
-                }
+                if (selectedTournament) tournament = selectedTournament;
+                view = 'tournament';
             }
 
             if (interaction.isButton()) {
@@ -211,13 +214,10 @@ async function runMyStats({
 
             await interaction.update(updatedPayload);
         } catch (error) {
-            console.error('mystats collector error:', error);
+            console.error('[mystats] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                    content: '❌ Failed to update stats view.',
-                    ephemeral: true
-                }).catch(() => null);
+                await interaction.reply({ content: '❌ Failed to update stats view.', ephemeral: true }).catch(() => null);
             }
         }
     });
@@ -227,21 +227,35 @@ async function runMyStats({
     });
 }
 
-async function buildPayload({
-    guild,
-    globalPlayer,
-    tournament,
-    tournaments,
-    view,
-    fallbackTag,
-    fallbackAvatar
-}) {
+/* ====================================================
+   PAYLOAD BUILDER
+==================================================== */
+
+async function buildPayload({ guild, globalPlayer, tournament, tournaments, view, fallbackTag, fallbackAvatar }) {
     const config = await ServerConfig.findOne({ guildId: guild.id }).lean();
 
+    // ── Per-guild profile (allTimeStats) ──
     const profile = await UserProfile.findOne({
         guildId: guild.id,
         discordID: globalPlayer.discordID
     }).lean();
+
+    // ── Global trophies & awards (all servers) ──
+    const globalProfiles = await UserProfile.find({
+        discordID: globalPlayer.discordID
+    }).lean();
+
+    const globalTrophies = [];
+    const globalAwards = [];
+
+    for (const gp of globalProfiles) {
+        if (Array.isArray(gp.trophies)) {
+            for (const t of gp.trophies) globalTrophies.push(t);
+        }
+        if (Array.isArray(gp.awards)) {
+            for (const a of gp.awards) globalAwards.push(a);
+        }
+    }
 
     const tournamentPlayer = await TournamentPlayer.findOne({
         guildId: guild.id,
@@ -255,42 +269,12 @@ async function buildPayload({
 
     const embed =
         view === 'alltime'
-            ? buildAllTimeEmbed({
-                guild,
-                globalPlayer,
-                profile,
-                emojis,
-                fallbackTag,
-                fallbackAvatar
-            })
+            ? buildAllTimeEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar })
             : view === 'trophies'
-                ? buildTrophiesEmbed({
-                    guild,
-                    globalPlayer,
-                    profile,
-                    emojis,
-                    tournamentEmojiMap,
-                    fallbackTag,
-                    fallbackAvatar
-                })
+                ? buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies })
                 : view === 'awards'
-                    ? buildAwardsEmbed({
-                        guild,
-                        globalPlayer,
-                        profile,
-                        emojis,
-                        fallbackTag,
-                        fallbackAvatar
-                    })
-                    : buildTournamentEmbed({
-                        guild,
-                        globalPlayer,
-                        tournament,
-                        tournamentPlayer,
-                        emojis,
-                        fallbackTag,
-                        fallbackAvatar
-                    });
+                    ? buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards })
+                    : buildTournamentEmbed({ guild, globalPlayer, tournament, tournamentPlayer, emojis, fallbackTag, fallbackAvatar });
 
     return {
         embeds: [embed],
@@ -301,23 +285,14 @@ async function buildPayload({
     };
 }
 
-function buildTournamentEmbed({
-    guild,
-    globalPlayer,
-    tournament,
-    tournamentPlayer,
-    emojis,
-    fallbackTag,
-    fallbackAvatar
-}) {
+/* ====================================================
+   EMBED BUILDERS
+==================================================== */
+
+function buildTournamentEmbed({ guild, globalPlayer, tournament, tournamentPlayer, emojis, fallbackTag, fallbackAvatar }) {
     const team = globalPlayer.teamId || null;
-
-    const teamName =
-        team?.name ||
-        globalPlayer.teamNameSnapshot ||
-        'No Team';
-
-    const teamColor = parseColor(team?.color);
+    const teamName = team?.name || globalPlayer.teamNameSnapshot || 'No Team';
+    const teamColor = parseColor(team?.color, null);
     const stats = tournamentPlayer?.stats || {};
     const contributions = (stats.goals || 0) + (stats.assists || 0);
     const tournamentEmoji = tournament.emoji || '🏆';
@@ -343,59 +318,20 @@ function buildTournamentEmbed({
                     `Captain: **${globalPlayer.isCaptain ? 'Yes' : 'No'}**`,
                 inline: false
             },
-            {
-                name: `${emojis.stats.played} Matches Played`,
-                value: `\`${stats.played || 0}\``,
-                inline: false
-            },
-            {
-                name: `${emojis.stats.mvps} MVPs`,
-                value: `\`${stats.mvps || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.goals} Goals`,
-                value: `\`${stats.goals || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.assists} Assists`,
-                value: `\`${stats.assists || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.saves} Saves`,
-                value: `\`${stats.saves || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.tackles} Tackles`,
-                value: `\`${stats.tackles || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.interceptions} Interceptions`,
-                value: `\`${stats.interceptions || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.ga} G+A`,
-                value: `\`${contributions}\``,
-                inline: true
-            }
+            { name: `${emojis.stats.played} Matches Played`, value: `\`${stats.played || 0}\``, inline: false },
+            { name: `${emojis.stats.mvps} MVPs`, value: `\`${stats.mvps || 0}\``, inline: true },
+            { name: `${emojis.stats.goals} Goals`, value: `\`${stats.goals || 0}\``, inline: true },
+            { name: `${emojis.stats.assists} Assists`, value: `\`${stats.assists || 0}\``, inline: true },
+            { name: `${emojis.stats.saves} Saves`, value: `\`${stats.saves || 0}\``, inline: true },
+            { name: `${emojis.stats.tackles} Tackles`, value: `\`${stats.tackles || 0}\``, inline: true },
+            { name: `${emojis.stats.interceptions} Interceptions`, value: `\`${stats.interceptions || 0}\``, inline: true },
+            { name: `${emojis.stats.ga} G+A`, value: `\`${contributions}\``, inline: true }
         )
         .setFooter({ text: fallbackTag })
         .setTimestamp();
 }
 
-function buildAllTimeEmbed({
-    guild,
-    globalPlayer,
-    profile,
-    emojis,
-    fallbackTag,
-    fallbackAvatar
-}) {
+function buildAllTimeEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar }) {
     const stats = profile?.allTimeStats || {};
     const contributions = (stats.goals || 0) + (stats.assists || 0);
 
@@ -404,65 +340,21 @@ function buildAllTimeEmbed({
         .setTitle(`🌍 ALL-TIME STATS — ${globalPlayer.name.toUpperCase()}`)
         .setThumbnail(fallbackAvatar || guild.iconURL())
         .addFields(
-            {
-                name: `${emojis.stats.played} Career Matches`,
-                value: `\`${stats.played || 0}\``,
-                inline: false
-            },
-            {
-                name: `${emojis.stats.goals} Goals`,
-                value: `\`${stats.goals || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.assists} Assists`,
-                value: `\`${stats.assists || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.mvps} MVPs`,
-                value: `\`${stats.mvps || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.saves} Saves`,
-                value: `\`${stats.saves || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.tackles} Tackles`,
-                value: `\`${stats.tackles || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.interceptions} Interceptions`,
-                value: `\`${stats.interceptions || 0}\``,
-                inline: true
-            },
-            {
-                name: `${emojis.stats.ga} G+A`,
-                value: `\`${contributions}\``,
-                inline: true
-            }
+            { name: `${emojis.stats.played} Career Matches`, value: `\`${stats.played || 0}\``, inline: false },
+            { name: `${emojis.stats.goals} Goals`, value: `\`${stats.goals || 0}\``, inline: true },
+            { name: `${emojis.stats.assists} Assists`, value: `\`${stats.assists || 0}\``, inline: true },
+            { name: `${emojis.stats.mvps} MVPs`, value: `\`${stats.mvps || 0}\``, inline: true },
+            { name: `${emojis.stats.saves} Saves`, value: `\`${stats.saves || 0}\``, inline: true },
+            { name: `${emojis.stats.tackles} Tackles`, value: `\`${stats.tackles || 0}\``, inline: true },
+            { name: `${emojis.stats.interceptions} Interceptions`, value: `\`${stats.interceptions || 0}\``, inline: true },
+            { name: `${emojis.stats.ga} G+A`, value: `\`${contributions}\``, inline: true }
         )
         .setFooter({ text: fallbackTag })
         .setTimestamp();
 }
 
-function buildTrophiesEmbed({
-    guild,
-    globalPlayer,
-    profile,
-    emojis,
-    tournamentEmojiMap,
-    fallbackTag,
-    fallbackAvatar
-}) {
-    const trophies = Array.isArray(profile?.trophies)
-        ? profile.trophies
-        : [];
-
-    const trophyLines = trophies
+function buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies }) {
+    const trophyLines = (globalTrophies || [])
         .slice(0, 25)
         .map(trophy => formatTrophyLine(trophy, emojis, tournamentEmojiMap))
         .filter(Boolean);
@@ -471,26 +363,13 @@ function buildTrophiesEmbed({
         .setColor(0xF1C40F)
         .setTitle(`${emojis.trophy.default} TROPHIES — ${globalPlayer.name.toUpperCase()}`)
         .setThumbnail(fallbackAvatar || guild.iconURL())
-        .setDescription(
-            trophyLines.length
-                ? trophyLines.join('\n')
-                : 'No trophies won yet.'
-        )
+        .setDescription(trophyLines.length ? trophyLines.join('\n') : 'No trophies won yet.')
         .setFooter({ text: fallbackTag })
         .setTimestamp();
 }
 
-function buildAwardsEmbed({
-    guild,
-    globalPlayer,
-    profile,
-    emojis,
-    fallbackTag,
-    fallbackAvatar
-}) {
-    const awards = Array.isArray(profile?.awards)
-        ? profile.awards
-        : [];
+function buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards }) {
+    const awards = globalAwards || [];
 
     return new EmbedBuilder()
         .setColor(0x9B59B6)
@@ -498,32 +377,22 @@ function buildAwardsEmbed({
         .setThumbnail(fallbackAvatar || guild.iconURL())
         .setDescription(
             awards.length
-                ? awards
-                    .slice(0, 25)
-                    .map(award => {
-                        const awardEmoji =
-                            award.emoji ||
-                            emojis.awards[award.awardType] ||
-                            '🏅';
+                ? awards.slice(0, 25).map(award => {
+                    const awardEmoji = award.emoji || emojis.awards[award.awardType] || '🏅';
+                    const awardName = award.name || cleanAwardTitle(award.title) || prettyAwardType(award.awardType);
+                    const tournamentName = award.tournamentName || award.tournamentKey || 'Tournament';
 
-                        const awardName =
-                            award.name ||
-                            cleanAwardTitle(award.title) ||
-                            prettyAwardType(award.awardType);
-
-                        const tournamentName =
-                            award.tournamentName ||
-                            award.tournamentKey ||
-                            'Tournament';
-
-                        return `${awardEmoji} **${tournamentName} ${awardName}**`;
-                    })
-                    .join('\n')
+                    return `${awardEmoji} **${tournamentName} ${awardName}**`;
+                }).join('\n')
                 : 'No awards earned yet.'
         )
         .setFooter({ text: fallbackTag })
         .setTimestamp();
 }
+
+/* ====================================================
+   UI COMPONENTS
+==================================================== */
 
 function buildTournamentDropdown(tournaments, selectedKey) {
     return new ActionRowBuilder().addComponents(
@@ -547,23 +416,24 @@ function buildButtons(view) {
             .setCustomId('mystats_tournament_view')
             .setLabel('Tournament Stats')
             .setStyle(view === 'tournament' ? ButtonStyle.Success : ButtonStyle.Secondary),
-
         new ButtonBuilder()
             .setCustomId('mystats_alltime')
             .setLabel('All-Time')
             .setStyle(view === 'alltime' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-
         new ButtonBuilder()
             .setCustomId('mystats_trophies')
             .setLabel('Trophies')
             .setStyle(view === 'trophies' ? ButtonStyle.Primary : ButtonStyle.Secondary),
-
         new ButtonBuilder()
             .setCustomId('mystats_awards')
             .setLabel('Awards')
             .setStyle(view === 'awards' ? ButtonStyle.Primary : ButtonStyle.Secondary)
     );
 }
+
+/* ====================================================
+   EMOJI CONFIG
+==================================================== */
 
 function getEmojiPack(config) {
     return {
@@ -584,22 +454,9 @@ function getEmojiPack(config) {
             playmaker: config?.emojis?.awards?.playmaker || '🎯'
         },
         trophy: {
-            default:
-                config?.emojis?.trophy?.default ||
-                config?.emojis?.trophies?.default ||
-                DEFAULT_TROPHY_EMOJI,
-
-            champion:
-                config?.emojis?.trophy?.champion ||
-                config?.emojis?.trophies?.champion ||
-                config?.emojis?.trophy?.default ||
-                config?.emojis?.trophies?.default ||
-                DEFAULT_TROPHY_EMOJI,
-
-            runner_up:
-                config?.emojis?.trophy?.runner_up ||
-                config?.emojis?.trophies?.runner_up ||
-                '🥈'
+            default: config?.emojis?.trophy?.default || config?.emojis?.trophies?.default || DEFAULT_TROPHY_EMOJI,
+            champion: config?.emojis?.trophy?.champion || config?.emojis?.trophies?.champion || config?.emojis?.trophy?.default || config?.emojis?.trophies?.default || DEFAULT_TROPHY_EMOJI,
+            runner_up: config?.emojis?.trophy?.runner_up || config?.emojis?.trophies?.runner_up || '🥈'
         }
     };
 }
@@ -611,15 +468,17 @@ async function getTournamentEmojiMap(guildId) {
         .catch(() => []);
 
     const map = new Map();
-
     for (const tournament of tournaments) {
         if (tournament.tournamentKey && tournament.emoji) {
             map.set(tournament.tournamentKey, tournament.emoji);
         }
     }
-
     return map;
 }
+
+/* ====================================================
+   TROPHY & AWARD FORMATTING
+==================================================== */
 
 function formatTrophyLine(trophy, emojis, tournamentEmojiMap) {
     const clean = normalizeTrophy(trophy, emojis, tournamentEmojiMap);
@@ -631,14 +490,8 @@ function formatTrophyLine(trophy, emojis, tournamentEmojiMap) {
 function normalizeTrophy(trophy, emojis, tournamentEmojiMap) {
     if (!trophy) return null;
 
-    const tournamentName =
-        trophy.tournamentName ||
-        trophy.tournamentKey ||
-        'Tournament';
-
-    const tournamentKey =
-        trophy.tournamentKey ||
-        '';
+    const tournamentName = trophy.tournamentName || trophy.tournamentKey || 'Tournament';
+    const tournamentKey = trophy.tournamentKey || '';
 
     let label = '';
 
@@ -653,13 +506,11 @@ function normalizeTrophy(trophy, emojis, tournamentEmojiMap) {
 
     if (!label) return null;
 
-    const tournamentEmoji =
-        tournamentKey && tournamentEmojiMap?.get(tournamentKey)
-            ? tournamentEmojiMap.get(tournamentKey)
-            : null;
+    const tournamentEmoji = tournamentKey && tournamentEmojiMap?.get(tournamentKey)
+        ? tournamentEmojiMap.get(tournamentKey)
+        : null;
 
     const savedEmoji = String(trophy.emoji || '').trim();
-
     const genericWinnerEmojis = new Set(['🏆', '🏅', '🥇']);
     const genericRunnerEmojis = new Set(['🥈', '🏅']);
 
@@ -679,23 +530,14 @@ function normalizeTrophy(trophy, emojis, tournamentEmojiMap) {
             (savedEmoji && !genericRunnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
             '🥈';
     } else {
-        emoji =
-            tournamentEmoji ||
-            savedEmoji ||
-            emojis?.trophy?.default ||
-            DEFAULT_TROPHY_EMOJI;
+        emoji = tournamentEmoji || savedEmoji || emojis?.trophy?.default || DEFAULT_TROPHY_EMOJI;
     }
 
-    return {
-        tournamentName,
-        label,
-        emoji
-    };
+    return { tournamentName, label, emoji };
 }
 
 function cleanAwardTitle(title) {
     let value = String(title || '').trim();
-
     if (!value) return '';
 
     value = value
@@ -716,21 +558,4 @@ function prettyAwardType(type) {
     };
 
     return map[type] || 'Award';
-}
-
-function truncate(text, max) {
-    const value = String(text || '');
-    return value.length > max ? value.slice(0, max - 3) + '...' : value;
-}
-
-function parseColor(color) {
-    if (!color) return null;
-
-    const cleaned = String(color).trim().replace('#', '');
-
-    if (/^[0-9A-Fa-f]{6}$/.test(cleaned)) {
-        return parseInt(cleaned, 16);
-    }
-
-    return null;
 }

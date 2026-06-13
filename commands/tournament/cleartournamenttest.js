@@ -1,3 +1,16 @@
+/**
+ * cleartournamenttest.js
+ *
+ * Remove all seeded TEST tournament data only.
+ * Identifies data by tournamentKey/^test, name/^TEST, or player name/^TEST.
+ * Cleans: tournaments, teams, players, tournament players, fixtures, profiles.
+ *
+ * Usage:  .cleartournamenttest confirm
+ * Slash:  /cleartournamenttest confirm:true
+ *
+ * Aliases: cleartest, clearseed, wipetesttour
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -34,6 +47,10 @@ module.exports = {
                 .setRequired(true)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -46,15 +63,19 @@ module.exports = {
                 return message.reply('⚠️ Use `.cleartournamenttest confirm`');
             }
 
-            return await runClear({
+            return await runClearTest({
                 guild: message.guild,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('cleartournamenttest prefix error:', error);
+            console.error('[cleartournamenttest] prefix error:', error);
             return message.reply('❌ Failed to clear test data.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -68,18 +89,32 @@ module.exports = {
                 return interaction.editReply('⚠️ Set confirm to true.');
             }
 
-            return await runClear({
+            return await runClearTest({
                 guild: interaction.guild,
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('cleartournamenttest slash error:', error);
-            return interaction.editReply('❌ Failed to clear test data.');
+            console.error('[cleartournamenttest] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to clear test data.');
+            }
+
+            return interaction.reply({ content: '❌ Failed to clear test data.', ephemeral: true });
         }
     }
 };
 
-async function runClear({ guild, reply }) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Find and delete all TEST-prefixed data for this guild.
+ * Order matters: delete dependents before parents.
+ */
+async function runClearTest({ guild, reply }) {
+    /* ── Locate all TEST data ── */
     const testTournaments = await TournamentSettings.find({
         guildId: guild.id,
         $or: [
@@ -99,10 +134,10 @@ async function runClear({ guild, reply }) {
 
     const tournamentIds = testTournaments.map(t => t._id);
     const tournamentKeys = testTournaments.map(t => t.tournamentKey);
+    const teamIds = testTeams.map(t => t._id);
+    const teamNames = testTeams.map(t => t.name);
 
-    const teamIds = testTeams.map(team => team._id);
-    const teamNames = testTeams.map(team => team.name);
-
+    /* ── Delete players (global + tournament) ── */
     const playerDelete = await Player.deleteMany({
         guildId: guild.id,
         $or: [
@@ -122,6 +157,7 @@ async function runClear({ guild, reply }) {
         ]
     });
 
+    /* ── Delete tournament teams ── */
     const tournamentTeamDelete = await TournamentTeam.deleteMany({
         guildId: guild.id,
         $or: [
@@ -131,6 +167,7 @@ async function runClear({ guild, reply }) {
         ]
     });
 
+    /* ── Delete fixtures ── */
     const fixtureDelete = await Fixture.deleteMany({
         guildId: guild.id,
         $or: [
@@ -143,10 +180,9 @@ async function runClear({ guild, reply }) {
         ]
     });
 
-    const userProfileUpdate = await UserProfile.updateMany(
-        {
-            guildId: guild.id
-        },
+    /* ── Clean user profiles (remove test trophies/awards) ── */
+    const userProfileResult = await UserProfile.updateMany(
+        { guildId: guild.id },
         {
             $pull: {
                 trophies: {
@@ -162,6 +198,7 @@ async function runClear({ guild, reply }) {
         }
     ).catch(() => ({ modifiedCount: 0 }));
 
+    /* ── Delete teams and tournaments (parents last) ── */
     const teamDelete = await Team.deleteMany({
         guildId: guild.id,
         _id: { $in: teamIds }
@@ -172,6 +209,7 @@ async function runClear({ guild, reply }) {
         _id: { $in: tournamentIds }
     });
 
+    /* ── Summary embed ── */
     const embed = new EmbedBuilder()
         .setColor(0xE74C3C)
         .setTitle('🧹 TEST DATA CLEARED')
@@ -182,7 +220,7 @@ async function runClear({ guild, reply }) {
             { name: 'Tournament Teams Removed', value: `**${tournamentTeamDelete.deletedCount || 0}**`, inline: true },
             { name: 'Tournament Players Removed', value: `**${tournamentPlayerDelete.deletedCount || 0}**`, inline: true },
             { name: 'Fixtures Removed', value: `**${fixtureDelete.deletedCount || 0}**`, inline: true },
-            { name: 'Profiles Cleaned', value: `**${userProfileUpdate.modifiedCount || 0}**`, inline: true }
+            { name: 'Profiles Cleaned', value: `**${userProfileResult.modifiedCount || 0}**`, inline: true }
         )
         .setTimestamp();
 

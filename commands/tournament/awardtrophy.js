@@ -1,3 +1,18 @@
+/**
+ * awardtrophy.js
+ *
+ * Award a tournament trophy (Winner/Runner Up) to a team and all its players.
+ * Writes trophy entries to Team, TournamentTeam, and each player's UserProfile.
+ *
+ * Deduplication: pulls any existing trophy for the same tournament + team
+ * before pushing the new one, so re-awarding is safe.
+ *
+ * Usage: .awardtrophy <tournamentKey> <team name> <champion|runner_up>
+ * Slash: /awardtrophy key:<key> team:<name> type:<type>
+ *
+ * Aliases: give-trophy, givetrophy, trophyaward
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
@@ -12,21 +27,14 @@ const {
     UserProfile
 } = require('../../models/Tournament');
 
-const {
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex } = require('../../utils/stringHelpers');
 
+/** Trophy types with display metadata */
 const TROPHY_TYPES = {
-    champion: {
-        label: 'Winner',
-        defaultEmoji: '🏆'
-    },
-    runner_up: {
-        label: 'Runner Up',
-        defaultEmoji: '🥈'
-    }
+    champion: { label: 'Winner', defaultEmoji: '🏆' },
+    runner_up: { label: 'Runner Up', defaultEmoji: '🥈' }
 };
 
 module.exports = {
@@ -34,7 +42,7 @@ module.exports = {
     description: 'Award a tournament trophy to a team and its players.',
     usage: '.awardtrophy <tournamentKey> <team name> <champion|runner_up>',
     aliases: ['give-trophy', 'givetrophy', 'trophyaward'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -60,6 +68,10 @@ module.exports = {
                     { name: 'Runner Up', value: 'runner_up' }
                 )
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -88,18 +100,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('awardtrophy prefix error:', error);
+            console.error('[awardtrophy] prefix error:', error);
             return message.reply('❌ Failed to award trophy.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -112,60 +125,52 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('awardtrophy slash error:', error);
+            console.error('[awardtrophy] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to award trophy.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to award trophy.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to award trophy.', ephemeral: true });
         }
     }
 };
 
-async function runAwardTrophy({
-    guild,
-    tournamentKey,
-    teamName,
-    type,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Award a trophy to a team and all its tournament players.
+ *
+ * Dedup strategy: $pull existing trophies for this tournament + team first,
+ * then $push the clean one. This makes re-awarding idempotent.
+ */
+async function runAwardTrophy({ guild, tournamentKey, teamName, type, reply }) {
     const trophyMeta = TROPHY_TYPES[type];
 
     if (!trophyMeta) {
-        return reply({
-            content: '❌ Invalid trophy type. Use `champion` or `runner_up`.'
-        });
+        return reply({ content: '❌ Invalid trophy type. Use `champion` or `runner_up`.' });
     }
 
-    const tournament = await getTournamentByKey(
-        guild.id,
-        tournamentKey,
-        { includeCompleted: true }
-    );
+    // ── Find tournament ──
+    const tournament = await getTournamentByKey(guild.id, tournamentKey, { includeCompleted: true });
 
     if (!tournament) {
-        return reply({
-            content: `❌ Tournament \`${tournamentKey}\` not found.`
-        });
+        return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
+    // ── Find team (case-insensitive) ──
     const team = await Team.findOne({
         guildId: guild.id,
-        name: {
-            $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-        }
+        name: { $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i') }
     });
 
     if (!team) {
-        return reply({
-            content: `❌ Team **${teamName}** not found.`
-        });
+        return reply({ content: `❌ Team **${teamName}** not found.` });
     }
 
+    // ── Find tournament team entry ──
     const tournamentTeam = await TournamentTeam.findOne({
         guildId: guild.id,
         tournamentId: tournament._id,
@@ -176,11 +181,10 @@ async function runAwardTrophy({
     });
 
     if (!tournamentTeam) {
-        return reply({
-            content: `❌ **${team.name}** is not linked to \`${tournament.tournamentKey}\`.`
-        });
+        return reply({ content: `❌ **${team.name}** is not linked to \`${tournament.tournamentKey}\`.` });
     }
 
+    // ── Find all tournament players ──
     const players = await TournamentPlayer.find({
         guildId: guild.id,
         tournamentId: tournament._id,
@@ -195,10 +199,11 @@ async function runAwardTrophy({
         return reply({
             content:
                 `❌ No tournament players found for **${team.name}** in \`${tournament.tournamentKey}\`.\n` +
-                `This means TournamentPlayer entries are not linked to this team.`
+                'This means TournamentPlayer entries are not linked to this team.'
         });
     }
 
+    // ── Build trophy payload ──
     const emoji = tournament.emoji || trophyMeta.defaultEmoji;
 
     const trophyPayload = {
@@ -219,66 +224,39 @@ async function runAwardTrophy({
         awardedAt: new Date()
     };
 
+    // ── Award each player ──
     let awardedPlayers = 0;
     const skipped = [];
 
-    for (const tournamentPlayer of players) {
+    for (const tp of players) {
         const globalPlayer =
-            tournamentPlayer.playerId && typeof tournamentPlayer.playerId === 'object'
-                ? tournamentPlayer.playerId
-                : tournamentPlayer.playerId
-                    ? await Player.findById(tournamentPlayer.playerId).catch(() => null)
+            tp.playerId && typeof tp.playerId === 'object'
+                ? tp.playerId
+                : tp.playerId
+                    ? await Player.findById(tp.playerId).catch(() => null)
                     : null;
 
-        const discordID =
-            tournamentPlayer.discordID ||
-            globalPlayer?.discordID ||
-            '';
-
-        const displayName =
-            tournamentPlayer.name ||
-            tournamentPlayer.playerNameSnapshot ||
-            globalPlayer?.name ||
-            'Unknown Player';
+        const discordID = tp.discordID || globalPlayer?.discordID || '';
+        const displayName = tp.playerNameSnapshot || tp.name || globalPlayer?.name || 'Unknown Player';
 
         if (!discordID) {
             skipped.push(displayName);
             continue;
         }
 
-        /*
-            Important:
-            Pull ALL old trophy entries for this same tournament + team before pushing the clean one.
-            This removes broken older entries like:
-            - Test Trophy
-            - Test 🏆 Test Winner
-            - undefined
-        */
         await UserProfile.findOneAndUpdate(
-            {
-                guildId: guild.id,
-                discordID
-            },
+            { guildId: guild.id, discordID },
             {
                 $setOnInsert: {
                     guildId: guild.id,
                     discordID,
                     allTimeStats: {
-                        played: 0,
-                        goals: 0,
-                        assists: 0,
-                        saves: 0,
-                        tackles: 0,
-                        interceptions: 0,
-                        yc: 0,
-                        rc: 0,
-                        mvps: 0
+                        played: 0, goals: 0, assists: 0, saves: 0,
+                        tackles: 0, interceptions: 0, yc: 0, rc: 0, mvps: 0
                     },
                     awards: []
                 },
-                $set: {
-                    displayName
-                },
+                $set: { displayName },
                 $pull: {
                     trophies: {
                         tournamentKey: tournament.tournamentKey,
@@ -286,66 +264,40 @@ async function runAwardTrophy({
                     }
                 }
             },
-            {
-                upsert: true
-            }
+            { upsert: true }
         );
 
         await UserProfile.updateOne(
-            {
-                guildId: guild.id,
-                discordID
-            },
-            {
-                $push: {
-                    trophies: trophyPayload
-                }
-            }
+            { guildId: guild.id, discordID },
+            { $push: { trophies: trophyPayload } }
         );
 
         awardedPlayers++;
     }
 
-    await Team.collection.updateOne(
+    // ── Award to Team document (dedup + push) ──
+    await Team.updateOne(
         { _id: team._id },
-        {
-            $pull: {
-                trophies: {
-                    tournamentKey: tournament.tournamentKey
-                }
-            }
-        }
+        { $pull: { trophies: { tournamentKey: tournament.tournamentKey } } }
     );
 
-    await Team.collection.updateOne(
+    await Team.updateOne(
         { _id: team._id },
-        {
-            $push: {
-                trophies: trophyPayload
-            }
-        }
+        { $push: { trophies: trophyPayload } }
     );
 
-    await TournamentTeam.collection.updateOne(
+    // ── Award to TournamentTeam document (dedup + push) ──
+    await TournamentTeam.updateOne(
         { _id: tournamentTeam._id },
-        {
-            $pull: {
-                trophies: {
-                    tournamentKey: tournament.tournamentKey
-                }
-            }
-        }
+        { $pull: { trophies: { tournamentKey: tournament.tournamentKey } } }
     );
 
-    await TournamentTeam.collection.updateOne(
+    await TournamentTeam.updateOne(
         { _id: tournamentTeam._id },
-        {
-            $push: {
-                trophies: trophyPayload
-            }
-        }
+        { $push: { trophies: trophyPayload } }
     );
 
+    // ── Response ──
     const embed = new EmbedBuilder()
         .setColor(type === 'champion' ? 0xF1C40F : 0xC0C0C0)
         .setTitle(`${emoji} TROPHY AWARDED`)
@@ -367,11 +319,5 @@ async function runAwardTrophy({
         });
     }
 
-    return reply({
-        embeds: [embed]
-    });
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    return reply({ embeds: [embed] });
 }

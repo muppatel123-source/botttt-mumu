@@ -1,20 +1,29 @@
+/**
+ * addstats.js
+ *
+ * Bulk add raw handfootball player stats from CSV data.
+ * Organizers can reply to a stats message with `.as` or paste data directly.
+ * Updates TournamentPlayer + UserProfile (all-time), then refreshes live top stats.
+ * Sends a detailed DM report to the organizer.
+ *
+ * Input format (per line):
+ *   discordID, goals, assists, interceptions, tackles, saves
+ *
+ * Usage: .as [tournamentKey] (reply to stats message)
+ *        .as [tournamentKey] <pasted lines>
+ * Slash: /addstats key:<key> data:<lines> count_played:<bool>
+ *
+ * Aliases: as
+ */
+
 const {
-    EmbedBuilder,
     SlashCommandBuilder,
+    EmbedBuilder,
     PermissionFlagsBits
 } = require('discord.js');
 
-const {
-    Player,
-    TournamentPlayer,
-    UserProfile
-} = require('../../models/Tournament');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { Player, TournamentPlayer, UserProfile } = require('../../models/Tournament');
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { updateLiveTopStats } = require('../../utils/updateTopStats');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
@@ -23,7 +32,7 @@ module.exports = {
     description: 'Bulk add raw handfootball player stats.',
     usage: '.addstats [tournamentKey] or reply to raw stats message with .as [tournamentKey]',
     aliases: ['as'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -46,6 +55,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -62,12 +75,7 @@ module.exports = {
             }
 
             const firstArgIsKey = Boolean(possibleKey && possibleKey === tournament.tournamentKey);
-
-            const rawData = await getRawStatsFromMessage(
-                message,
-                args,
-                firstArgIsKey
-            );
+            const rawData = await getRawStatsFromMessage(message, args, firstArgIsKey);
 
             if (!rawData) {
                 return message.reply(
@@ -87,10 +95,14 @@ module.exports = {
                 respondFinal: payload => waitMsg.edit(payload)
             });
         } catch (error) {
-            console.error('addstats.js prefix error:', error);
+            console.error('[addstats] prefix error:', error);
             return message.reply('❌ Failed to process raw stats.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -126,7 +138,7 @@ module.exports = {
                 respondFinal: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('addstats.js slash error:', error);
+            console.error('[addstats] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to process raw stats.');
@@ -140,21 +152,33 @@ module.exports = {
     }
 };
 
+/* ====================================================
+   TOURNAMENT RESOLUTION
+==================================================== */
+
+/**
+ * Resolve a tournament from a key, or fall back to the server default.
+ * Includes completed tournaments so stats can be added retroactively.
+ */
 async function resolveTournament(guildId, key) {
     if (key) {
-        const found = await getTournamentByKey(guildId, key, {
-            includeCompleted: true
-        });
-
+        const found = await getTournamentByKey(guildId, key, { includeCompleted: true });
         if (found) return found;
     }
 
-    return getDefaultTournament(guildId, {
-        includeCompleted: true
-    });
+    return getDefaultTournament(guildId, { includeCompleted: true });
 }
 
+/* ====================================================
+   RAW DATA EXTRACTION
+==================================================== */
+
+/**
+ * Extract raw stats data from a replied message or command args.
+ * Supports code blocks and plain CSV lines.
+ */
 async function getRawStatsFromMessage(message, args, firstArgIsKey) {
+    // Try fetching the replied-to message
     const replied = message.reference?.messageId
         ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
         : null;
@@ -163,13 +187,17 @@ async function getRawStatsFromMessage(message, args, firstArgIsKey) {
         return extractRawStatsBlock(replied.content);
     }
 
+    // Fall back to args
     const contentArgs = firstArgIsKey ? args.slice(1) : args;
-
     if (!contentArgs.length) return '';
 
     return contentArgs.join(' ');
 }
 
+/**
+ * Extract a stats block from message content.
+ * Tries code block first, then filters lines starting with a Discord ID.
+ */
 function extractRawStatsBlock(content) {
     const codeBlockMatch = content.match(/```(?:\w+)?\n?([\s\S]*?)```/);
     if (codeBlockMatch) return codeBlockMatch[1].trim();
@@ -181,19 +209,16 @@ function extractRawStatsBlock(content) {
         .join('\n');
 }
 
-async function processStats({
-    client,
-    guild,
-    tournament,
-    rawData,
-    countPlayed,
-    organizerUser,
-    respondFinal
-}) {
-    const lines = rawData
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean);
+/* ====================================================
+   CORE PROCESSING
+==================================================== */
+
+/**
+ * Parse and apply bulk stats to tournament players.
+ * Also updates UserProfile all-time stats and DMs the organizer a report.
+ */
+async function processStats({ client, guild, tournament, rawData, countPlayed, organizerUser, respondFinal }) {
+    const lines = rawData.split('\n').map(line => line.trim()).filter(Boolean);
 
     const successLog = [];
     const skippedLog = [];
@@ -219,19 +244,10 @@ async function processStats({
             continue;
         }
 
-        const {
-            discordID,
-            goals,
-            assists,
-            interceptions,
-            tackles,
-            saves
-        } = parsed.data;
+        const { discordID, goals, assists, interceptions, tackles, saves } = parsed.data;
 
-        const player = await Player.findOne({
-            guildId: guild.id,
-            discordID
-        });
+        // ── Find player ──
+        const player = await Player.findOne({ guildId: guild.id, discordID });
 
         if (!player) {
             skippedCount++;
@@ -239,6 +255,7 @@ async function processStats({
             continue;
         }
 
+        // ── Build increment ──
         const inc = {
             'stats.goals': goals,
             'stats.assists': assists,
@@ -251,19 +268,11 @@ async function processStats({
             inc['stats.played'] = 1;
         }
 
+        // ── Update tournament player ──
         const tp = await TournamentPlayer.findOneAndUpdate(
-            {
-                guildId: guild.id,
-                tournamentId: tournament._id,
-                playerId: player._id,
-                isActive: true
-            },
-            {
-                $inc: inc
-            },
-            {
-                returnDocument: 'after'
-            }
+            { guildId: guild.id, tournamentId: tournament._id, playerId: player._id, isActive: true },
+            { $inc: inc },
+            { returnDocument: 'after' }
         );
 
         if (!tp) {
@@ -272,19 +281,12 @@ async function processStats({
             continue;
         }
 
+        // ── Update all-time user profile (upsert) ──
         await UserProfile.findOneAndUpdate(
+            { guildId: guild.id, discordID },
             {
-                guildId: guild.id,
-                discordID
-            },
-            {
-                $setOnInsert: {
-                    guildId: guild.id,
-                    discordID
-                },
-                $set: {
-                    displayName: player.name
-                },
+                $setOnInsert: { guildId: guild.id, discordID },
+                $set: { displayName: player.name },
                 $inc: {
                     'allTimeStats.goals': goals,
                     'allTimeStats.assists': assists,
@@ -294,14 +296,11 @@ async function processStats({
                     'allTimeStats.played': countPlayed ? 1 : 0
                 }
             },
-            {
-                upsert: true,
-                returnDocument: 'after'
-            }
+            { upsert: true, returnDocument: 'after' }
         );
 
+        // ── Track totals ──
         processedCount++;
-
         totals.goals += goals;
         totals.assists += assists;
         totals.interceptions += interceptions;
@@ -310,27 +309,18 @@ async function processStats({
         if (countPlayed) totals.played += 1;
 
         successLog.push(
-            `${player.name}: ${buildStatString({
-                goals,
-                assists,
-                interceptions,
-                tackles,
-                saves,
-                countPlayed
-            })}`
+            `${player.name}: ${buildStatString({ goals, assists, interceptions, tackles, saves, countPlayed })}`
         );
     }
 
-    await updateLiveTopStats(
-        client,
-        guild.id,
-        tournament.tournamentKey
-    ).catch(console.error);
+    // ── Refresh live top stats ──
+    await updateLiveTopStats(client, guild.id, tournament.tournamentKey).catch(console.error);
 
     if (global.io) {
         global.io.emit('update');
     }
 
+    // ── DM detailed report to organizer ──
     const dmEmbed = new EmbedBuilder()
         .setColor(processedCount > 0 ? 0x2ECC71 : 0xE74C3C)
         .setTitle('📊 Stats Update Details')
@@ -354,16 +344,12 @@ async function processStats({
             },
             {
                 name: 'Updated Players',
-                value: successLog.length
-                    ? successLog.slice(0, 35).join('\n')
-                    : 'No stats were updated.',
+                value: successLog.length ? successLog.slice(0, 35).join('\n') : 'No stats were updated.',
                 inline: false
             },
             {
                 name: 'Skipped',
-                value: skippedLog.length
-                    ? skippedLog.slice(0, 20).join('\n')
-                    : 'None',
+                value: skippedLog.length ? skippedLog.slice(0, 20).join('\n') : 'None',
                 inline: false
             }
         )
@@ -372,12 +358,18 @@ async function processStats({
 
     await organizerUser.send({ embeds: [dmEmbed] }).catch(() => null);
 
-    return respondFinal({
-        content: '✅ Stats Updated',
-        embeds: []
-    });
+    // ── Brief in-channel confirmation ──
+    return respondFinal({ content: '✅ Stats Updated', embeds: [] });
 }
 
+/* ====================================================
+   PARSING HELPERS
+==================================================== */
+
+/**
+ * Parse a single CSV stats line.
+ * Format: discordID, goals, assists, interceptions, tackles, saves
+ */
 function parseRawStatLine(line) {
     const parts = line.split(',').map(part => part.trim());
 
@@ -405,19 +397,18 @@ function parseRawStatLine(line) {
     };
 }
 
+/**
+ * Parse an integer, returning 0 for NaN.
+ */
 function safeInt(value) {
     const parsed = parseInt(value, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function buildStatString({
-    goals,
-    assists,
-    interceptions,
-    tackles,
-    saves,
-    countPlayed
-}) {
+/**
+ * Build a compact stat display string for the DM report.
+ */
+function buildStatString({ goals, assists, interceptions, tackles, saves, countPlayed }) {
     const chunks = [];
 
     if (goals > 0) chunks.push(`${goals}⚽`);
@@ -425,7 +416,7 @@ function buildStatString({
     if (interceptions > 0) chunks.push(`${interceptions}🧠`);
     if (tackles > 0) chunks.push(`${tackles}⚔️`);
     if (saves > 0) chunks.push(`${saves}🧤`);
-    if (countPlayed) chunks.push(`+1🏟️`);
+    if (countPlayed) chunks.push('+1🏟️');
 
     return chunks.length ? chunks.join(' ') : '✅';
 }

@@ -1,17 +1,25 @@
+/**
+ * fixfixture.js
+ *
+ * Repair a fixture by editing teams, round label, phase, or group.
+ * Resolves team names to TournamentTeam entries automatically.
+ *
+ * Usage:  .fixfixture [key] match=<number> [home=...] [away=...] [round=...] [phase=...] [group=...]
+ * Slash:  /fixfixture match:<number> [key] [home] [away] [round] [phase] [group]
+ *
+ * Aliases: repairfixture
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    Fixture,
-    Team,
-    TournamentTeam
-} = require('../../models/Tournament');
-
+const { Fixture, Team, TournamentTeam } = require('../../models/Tournament');
 const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { escapeRegex } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'fixfixture',
@@ -55,6 +63,10 @@ module.exports = {
         )
         .addStringOption(opt => opt.setName('group').setDescription('New group key').setRequired(false)),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -72,18 +84,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('fixfixture prefix error:', error);
+            console.error('[fixfixture] prefix error:', error);
             return message.reply('❌ Failed to fix fixture.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 Unauthorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -100,31 +113,28 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('fixfixture slash error:', error);
+            console.error('[fixfixture] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to fix fixture.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to fix fixture.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to fix fixture.', ephemeral: true });
         }
     }
 };
 
-async function runFixFixture({
-    guild,
-    key,
-    matchNumber,
-    home,
-    away,
-    round,
-    phase,
-    group,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Repair a fixture's data. Can update:
+ * - Home/away teams (resolved to TournamentTeam entries)
+ * - Round label, phase, group key
+ */
+async function runFixFixture({ guild, key, matchNumber, home, away, round, phase, group, reply }) {
+    /* ── Resolve tournament ── */
     const tournament = key
         ? await getTournamentByKey(guild.id, key)
         : await getDefaultTournament(guild.id);
@@ -133,6 +143,7 @@ async function runFixFixture({
         return reply({ content: '❌ Tournament not found.' });
     }
 
+    /* ── Find fixture ── */
     const fixture = await Fixture.findOne({
         guildId: guild.id,
         tournamentId: tournament._id,
@@ -145,6 +156,7 @@ async function runFixFixture({
         });
     }
 
+    /* ── Apply team changes ── */
     if (home) {
         const resolved = await resolveTournamentTeam(guild.id, tournament._id, home);
         if (!resolved) return reply({ content: `❌ Home team not found/active: **${home}**` });
@@ -163,15 +175,17 @@ async function runFixFixture({
         fixture.awayTournamentTeamId = resolved.entry._id;
     }
 
+    /* ── Apply metadata changes ── */
     if (round) fixture.roundLabel = round;
     if (phase) fixture.phase = phase;
 
-    if (typeof group !== 'undefined' && group !== null) {
+    if (group != null) {
         fixture.groupKey = group ? group.toUpperCase() : null;
     }
 
     await fixture.save();
 
+    /* ── Response ── */
     const embed = new EmbedBuilder()
         .setColor(0x3498DB)
         .setTitle('🔧 FIXTURE REPAIRED')
@@ -191,12 +205,15 @@ async function runFixFixture({
     return reply({ embeds: [embed] });
 }
 
+/* ====================================================
+   HELPERS
+==================================================== */
+
+/** Resolve a team name to a Team + TournamentTeam pair. */
 async function resolveTournamentTeam(guildId, tournamentId, teamName) {
     const team = await Team.findOne({
         guildId,
-        name: {
-            $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i')
-        }
+        name: { $regex: new RegExp(`^${escapeRegex(teamName)}$`, 'i') }
     });
 
     if (!team) return null;
@@ -213,6 +230,11 @@ async function resolveTournamentTeam(guildId, tournamentId, teamName) {
     return { team, entry };
 }
 
+/* ====================================================
+   PREFIX ARG PARSER
+==================================================== */
+
+/** Parse prefix args: [key] match=<num> [home=...] [away=...] [round=...] [phase=...] [group=...] */
 function parsePrefixArgs(args) {
     let key = null;
     let matchNumber = null;
@@ -240,8 +262,4 @@ function parsePrefixArgs(args) {
     }
 
     return { ok: true, key, matchNumber, home, away, round, phase, group };
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

@@ -1,3 +1,15 @@
+/**
+ * myteam.js
+ *
+ * View your team details, squad, stats, and trophies.
+ * Supports interactive switching between Overview and Trophies views.
+ *
+ * Usage:  .myteam [team name]
+ * Slash:  /myteam [team]
+ *
+ * Aliases: teamview, squad, club
+ */
+
 const {
     SlashCommandBuilder,
     EmbedBuilder,
@@ -13,11 +25,16 @@ const {
     UserProfile
 } = require('../../models/Tournament');
 
+const { escapeRegex } = require('../../utils/stringHelpers');
+const { parseColor } = require('../../utils/displayHelpers');
+
 module.exports = {
     name: 'myteam',
     description: 'View your team details, stats and trophies.',
     usage: '.myteam [team name]',
     aliases: ['teamview', 'squad', 'club'],
+    hidden: false,
+    cooldown: 5,
 
     data: new SlashCommandBuilder()
         .setName('myteam')
@@ -28,22 +45,29 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
 
             return await runMyTeam({
                 guild: message.guild,
-                userId: message.author.id,
                 viewerId: message.author.id,
                 requestedTeamName: args.length ? args.join(' ').trim() : null,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('myteam prefix error:', error);
+            console.error('[myteam] prefix error:', error);
             return message.reply('❌ Failed to load team details.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -51,38 +75,28 @@ module.exports = {
 
             return await runMyTeam({
                 guild: interaction.guild,
-                userId: interaction.user.id,
                 viewerId: interaction.user.id,
                 requestedTeamName: interaction.options.getString('team'),
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('myteam slash error:', error);
+            console.error('[myteam] slash error:', error);
 
-            if (interaction.replied || interaction.deferred) {
-                return interaction.editReply({ content: '❌ Failed to load team details.' });
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to load team details.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to load team details.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to load team details.', ephemeral: true });
         }
     }
 };
 
-async function runMyTeam({
-    guild,
-    userId,
-    viewerId,
-    requestedTeamName,
-    reply
-}) {
-    const team = await resolveTeam({
-        guild,
-        userId,
-        requestedTeamName
-    });
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+async function runMyTeam({ guild, viewerId, requestedTeamName, reply }) {
+    const team = await resolveTeam({ guild, userId: viewerId, requestedTeamName });
 
     if (!team) {
         return reply({
@@ -94,27 +108,18 @@ async function runMyTeam({
 
     let view = 'overview';
 
-    const payload = await buildPayload({
-        guild,
-        team,
-        view
-    });
+    const payload = await buildPayload({ guild, team, view });
 
     const msg = await reply(payload);
 
     if (!msg?.createMessageComponentCollector) return;
 
-    const collector = msg.createMessageComponentCollector({
-        time: 600000
-    });
+    const collector = msg.createMessageComponentCollector({ time: 600000 });
 
     collector.on('collect', async interaction => {
         try {
             if (interaction.user.id !== viewerId) {
-                return interaction.reply({
-                    content: 'Not your menu.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: 'Not your menu.', ephemeral: true });
             }
 
             if (interaction.isButton()) {
@@ -122,21 +127,13 @@ async function runMyTeam({
                 if (interaction.customId === 'myteam_trophies') view = 'trophies';
             }
 
-            const updatedPayload = await buildPayload({
-                guild,
-                team,
-                view
-            });
-
+            const updatedPayload = await buildPayload({ guild, team, view });
             await interaction.update(updatedPayload);
         } catch (error) {
-            console.error('myteam collector error:', error);
+            console.error('[myteam] collector error:', error);
 
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({
-                    content: '❌ Failed to update team view.',
-                    ephemeral: true
-                }).catch(() => null);
+                await interaction.reply({ content: '❌ Failed to update team view.', ephemeral: true }).catch(() => null);
             }
         }
     });
@@ -146,17 +143,15 @@ async function runMyTeam({
     });
 }
 
-async function resolveTeam({
-    guild,
-    userId,
-    requestedTeamName
-}) {
+/* ====================================================
+   TEAM RESOLUTION
+==================================================== */
+
+async function resolveTeam({ guild, userId, requestedTeamName }) {
     if (requestedTeamName) {
         return Team.findOne({
             guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(requestedTeamName)}$`, 'i')
-            }
+            name: { $regex: new RegExp(`^${escapeRegex(requestedTeamName)}$`, 'i') }
         });
     }
 
@@ -170,20 +165,18 @@ async function resolveTeam({
     if (player?.teamNameSnapshot) {
         return Team.findOne({
             guildId: guild.id,
-            name: {
-                $regex: new RegExp(`^${escapeRegex(player.teamNameSnapshot)}$`, 'i')
-            }
+            name: { $regex: new RegExp(`^${escapeRegex(player.teamNameSnapshot)}$`, 'i') }
         });
     }
 
     return null;
 }
 
-async function buildPayload({
-    guild,
-    team,
-    view
-}) {
+/* ====================================================
+   EMBED BUILDERS
+==================================================== */
+
+async function buildPayload({ guild, team, view }) {
     const embed = view === 'trophies'
         ? await buildTrophiesEmbed({ guild, team })
         : await buildOverviewEmbed({ guild, team });
@@ -194,17 +187,11 @@ async function buildPayload({
     };
 }
 
-async function buildOverviewEmbed({
-    guild,
-    team
-}) {
+async function buildOverviewEmbed({ guild, team }) {
     const players = await Player.find({
         guildId: guild.id,
         teamId: team._id
-    }).sort({
-        isCaptain: -1,
-        name: 1
-    });
+    }).sort({ isCaptain: -1, name: 1 });
 
     const tournamentEntries = await TournamentTeam.find({
         guildId: guild.id,
@@ -266,23 +253,17 @@ async function buildOverviewEmbed({
     return embed;
 }
 
-async function buildTrophiesEmbed({
-    guild,
-    team
-}) {
-    const trophies = await collectTeamTrophies({
-        guildId: guild.id,
-        team
-    });
-
-    const trophiesText = trophies.length
-        ? trophies.map(formatTrophyLine).join('\n')
-        : 'No trophies won yet.';
+async function buildTrophiesEmbed({ guild, team }) {
+    const trophies = await collectTeamTrophies({ guildId: guild.id, team });
 
     const embed = new EmbedBuilder()
         .setColor(0xF1C40F)
         .setTitle(`🏆 ${team.name.toUpperCase()} TROPHIES`)
-        .setDescription(trophiesText)
+        .setDescription(
+            trophies.length
+                ? trophies.map(formatTrophyLine).join('\n')
+                : 'No trophies won yet.'
+        )
         .setTimestamp();
 
     if (team.logoURL) {
@@ -294,14 +275,14 @@ async function buildTrophiesEmbed({
     return embed;
 }
 
-async function collectTeamTrophies({
-    guildId,
-    team
-}) {
+/* ====================================================
+   TROPHY COLLECTION
+==================================================== */
+
+async function collectTeamTrophies({ guildId, team }) {
     const trophyMap = new Map();
 
     const teamDoc = await Team.findById(team._id).lean().catch(() => null);
-
     for (const trophy of teamDoc?.trophies || []) {
         addTrophyToMap(trophyMap, trophy);
     }
@@ -341,23 +322,14 @@ function addTrophyToMap(map, trophy) {
     if (!clean) return;
 
     const key = `${clean.tournamentKey}:${clean.label}`;
-
-    if (!map.has(key)) {
-        map.set(key, clean);
-    }
+    if (!map.has(key)) map.set(key, clean);
 }
 
 function normalizeTrophy(trophy) {
     if (!trophy) return null;
 
-    const tournamentName =
-        trophy.tournamentName ||
-        trophy.tournamentKey ||
-        'Tournament';
-
-    const tournamentKey =
-        trophy.tournamentKey ||
-        tournamentName.toLowerCase().replace(/\s+/g, '-');
+    const tournamentName = trophy.tournamentName || trophy.tournamentKey || 'Tournament';
+    const tournamentKey = trophy.tournamentKey || tournamentName.toLowerCase().replace(/\s+/g, '-');
 
     let label = '';
 
@@ -372,9 +344,7 @@ function normalizeTrophy(trophy) {
 
     if (!label) return null;
 
-    const emoji =
-        trophy.emoji ||
-        (label === 'Winner' ? '🏆' : '🥈');
+    const emoji = trophy.emoji || (label === 'Winner' ? '🏆' : '🥈');
 
     return {
         tournamentKey,
@@ -389,32 +359,19 @@ function formatTrophyLine(trophy) {
     return `${trophy.emoji} **${trophy.tournamentName} ${trophy.label}**`;
 }
 
+/* ====================================================
+   UI COMPONENTS
+==================================================== */
+
 function buildButtons(view) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('myteam_overview')
             .setLabel('Team Overview')
             .setStyle(view === 'overview' ? ButtonStyle.Success : ButtonStyle.Secondary),
-
         new ButtonBuilder()
             .setCustomId('myteam_trophies')
             .setLabel('Trophies')
             .setStyle(view === 'trophies' ? ButtonStyle.Primary : ButtonStyle.Secondary)
     );
-}
-
-function parseColor(color) {
-    if (!color) return 0xFEBE10;
-
-    const cleaned = String(color).trim().replace('#', '');
-
-    if (/^[0-9A-Fa-f]{6}$/.test(cleaned)) {
-        return parseInt(cleaned, 16);
-    }
-
-    return 0xFEBE10;
-}
-
-function escapeRegex(text) {
-    return String(text).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
 }

@@ -1,19 +1,28 @@
+/**
+ * awardplayer.js
+ *
+ * Award an individual player (Ballon d'Or, Golden Boot, etc.).
+ * Saves to the player's UserProfile for tracking across tournaments.
+ *
+ * Usage: .awardplayer <key> @user <award>
+ * Slash: /awardplayer key:<key> user:<user> award:<type>
+ *
+ * Aliases: giveaward, awarduser
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    Player,
-    TournamentSettings,
-    UserProfile
-} = require('../../models/Tournament');
-
+const { Player, TournamentSettings, UserProfile } = require('../../models/Tournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { getUserFromArgs } = require('../../utils/stringHelpers');
 
+/** Valid award types with display labels */
 const VALID_AWARDS = {
-    ballon_dor: '🏆 Ballon d\'Or',
+    ballon_dor: "🏆 Ballon d'Or",
     golden_boot: '⚽ Golden Boot',
     golden_glove: '🧤 Golden Glove',
     playmaker: '🎯 Playmaker'
@@ -24,7 +33,7 @@ module.exports = {
     description: 'Award a player.',
     usage: '.awardplayer <key> @user <award>',
     aliases: ['giveaward', 'awarduser'],
-    hidden: true,
+    hidden: false,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -46,12 +55,16 @@ module.exports = {
                 .setDescription('Award type')
                 .setRequired(true)
                 .addChoices(
-                    { name: 'Ballon d\'Or', value: 'ballon_dor' },
+                    { name: "Ballon d'Or", value: 'ballon_dor' },
                     { name: 'Golden Boot', value: 'golden_boot' },
                     { name: 'Golden Glove', value: 'golden_glove' },
                     { name: 'Playmaker', value: 'playmaker' }
                 )
         ),
+
+    /* ================================================
+       PREFIX
+    ================================================ */
 
     async execute(message, args) {
         try {
@@ -61,7 +74,11 @@ module.exports = {
                 return message.reply('🚫 You are not authorized.');
             }
 
-            const user = message.mentions.users.first();
+            // Args: [key, user_or_username, award_type]
+            // Pass only the user-position args to getUserFromArgs
+            const user = message.mentions.users.first()
+                || await getUserFromArgs(message, args.slice(1, -1));
+
             const award = args[args.length - 1]?.toLowerCase();
 
             if (!args.length || !user || !VALID_AWARDS[award]) {
@@ -78,18 +95,19 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('awardplayer prefix error:', error);
+            console.error('[awardplayer] prefix error:', error);
             return message.reply('❌ Failed to award player.');
         }
     },
 
+    /* ================================================
+       SLASH
+    ================================================ */
+
     async slashExecute(interaction) {
         try {
             if (!(await isOrganizer(interaction.guild.id, interaction.user.id))) {
-                return interaction.reply({
-                    content: '🚫 You are not authorized.',
-                    ephemeral: true
-                });
+                return interaction.reply({ content: '🚫 You are not authorized.', ephemeral: true });
             }
 
             await interaction.deferReply({ ephemeral: true });
@@ -102,60 +120,69 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('awardplayer slash error:', error);
+            console.error('[awardplayer] slash error:', error);
 
             if (interaction.deferred || interaction.replied) {
                 return interaction.editReply('❌ Failed to award player.');
             }
 
-            return interaction.reply({
-                content: '❌ Failed to award player.',
-                ephemeral: true
-            });
+            return interaction.reply({ content: '❌ Failed to award player.', ephemeral: true });
         }
     }
 };
 
-async function runAward({
-    guild,
-    tournamentKey,
-    discordID,
-    awardType,
-    reply
-}) {
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/**
+ * Award a player for a tournament.
+ * Upserts the UserProfile and pushes the award entry.
+ */
+async function runAward({ guild, tournamentKey, discordID, awardType, reply }) {
+    // ── Find tournament ──
     const tournament = await TournamentSettings.findOne({
         guildId: guild.id,
         tournamentKey
     });
 
     if (!tournament) {
-        return reply({
-            content: `❌ Tournament \`${tournamentKey}\` not found.`
-        });
+        return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
+    // ── Find player ──
     const player = await Player.findOne({
         guildId: guild.id,
         discordID
     });
 
     if (!player) {
-        return reply({
-            content: '❌ Player not found.'
-        });
+        return reply({ content: '❌ Player not found.' });
     }
 
-    await UserProfile.findOneAndUpdate(
+    // ── Remove any existing award of this type for this tournament (prevent duplicates) ──
+    await UserProfile.updateOne(
+        { guildId: guild.id, discordID },
         {
-            guildId: guild.id,
-            discordID
-        },
+            $pull: {
+                awards: {
+                    tournamentKey: tournament.tournamentKey,
+                    awardType
+                }
+            }
+        }
+    );
+
+    // ── Upsert profile with the award ──
+    await UserProfile.findOneAndUpdate(
+        { guildId: guild.id, discordID },
         {
             $setOnInsert: {
                 guildId: guild.id,
                 discordID,
                 displayName: player.name
             },
+            $set: { displayName: player.name },
             $push: {
                 awards: {
                     tournamentId: tournament._id,
@@ -167,12 +194,10 @@ async function runAward({
                 }
             }
         },
-        {
-            upsert: true,
-            new: true
-        }
+        { upsert: true, new: true }
     );
 
+    // ── Response ──
     const embed = new EmbedBuilder()
         .setColor(0x9B59B6)
         .setTitle('🏅 PLAYER AWARDED')
@@ -183,7 +208,5 @@ async function runAward({
         )
         .setTimestamp();
 
-    return reply({
-        embeds: [embed]
-    });
+    return reply({ embeds: [embed] });
 }

@@ -1,20 +1,26 @@
+/**
+ * generatestage.js
+ *
+ * Generate league, group, or knockout fixtures for a tournament.
+ * Validates teams, checks for existing fixtures, and creates match documents.
+ *
+ * Usage:  .generatestage [key] <league|groups|knockout> [--force]
+ * Slash:  /generatestage stage:<stage> [key] [force]
+ *
+ * Aliases: genstage, gst
+ */
+
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
     EmbedBuilder
 } = require('discord.js');
 
-const {
-    Fixture,
-    TournamentTeam
-} = require('../../models/Tournament');
-
-const {
-    getDefaultTournament,
-    getTournamentByKey
-} = require('../../utils/getTournament');
-
+const { Fixture, TournamentTeam } = require('../../models/Tournament');
+const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { prettyPhase } = require('../../utils/displayHelpers');
+const { buildRoundRobinFixtures, buildKnockoutFixtures, getNextMatchNumber } = require('../../utils/fixtureBuilder');
 
 module.exports = {
     name: 'generatestage',
@@ -49,6 +55,10 @@ module.exports = {
                 .setRequired(false)
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -66,10 +76,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('generatestage prefix error:', error);
+            console.error('[generatestage] prefix error:', error);
             return message.reply('❌ Failed to generate stage.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -87,11 +101,20 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('generatestage slash error:', error);
-            return interaction.editReply('❌ Failed to generate stage.');
+            console.error('[generatestage] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to generate stage.');
+            }
+
+            return interaction.reply({ content: '❌ Failed to generate stage.', ephemeral: true });
         }
     }
 };
+
+/* ====================================================
+   PREFIX ARG PARSER
+==================================================== */
 
 function parsePrefixArgs(args) {
     let key = null;
@@ -114,6 +137,11 @@ function parsePrefixArgs(args) {
     return { ok: true, key, stage, force };
 }
 
+/* ====================================================
+   CORE LOGIC
+==================================================== */
+
+/** Route to the appropriate generator based on stage type. */
 async function runGenerate({ guild, key, stage, force, reply }) {
     const tournament = key
         ? await getTournamentByKey(guild.id, key)
@@ -131,18 +159,16 @@ async function runGenerate({ guild, key, stage, force, reply }) {
         return reply({ content: '❌ At least 2 active teams are required.' });
     }
 
-    if (stage === 'league') {
-        return generateLeague({ guild, tournament, teams, force, reply });
-    }
+    if (stage === 'league') return generateLeague({ guild, tournament, teams, force, reply });
+    if (stage === 'groups') return generateGroups({ guild, tournament, teams, force, reply });
+    if (stage === 'knockout') return generateKnockout({ guild, tournament, teams, force, reply });
 
-    if (stage === 'groups') {
-        return generateGroups({ guild, tournament, teams, force, reply });
-    }
-
-    if (stage === 'knockout') {
-        return generateKnockout({ guild, tournament, teams, force, reply });
-    }
+    return reply({ content: '❌ Unknown stage type.' });
 }
+
+/* ====================================================
+   LEAGUE GENERATOR
+==================================================== */
 
 async function generateLeague({ guild, tournament, teams, force, reply }) {
     const existing = await Fixture.countDocuments({
@@ -168,7 +194,7 @@ async function generateLeague({ guild, tournament, teams, force, reply }) {
     const fixtures = buildRoundRobinFixtures({
         guildId: guild.id,
         tournament,
-        teams,
+        teams: normalizeTournamentTeams(teams),
         phase: 'league',
         roundPrefix: 'Matchday',
         groupKey: null,
@@ -183,6 +209,10 @@ async function generateLeague({ guild, tournament, teams, force, reply }) {
 
     return successReply(reply, tournament, '🏟️ LEAGUE GENERATED', fixtures.length);
 }
+
+/* ====================================================
+   GROUP STAGE GENERATOR
+==================================================== */
 
 async function generateGroups({ guild, tournament, teams, force, reply }) {
     if (!tournament.groupCount || tournament.groupCount <= 0) {
@@ -209,11 +239,7 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    const groupKeys = Array.from(
-        { length: tournament.groupCount },
-        (_, i) => String.fromCharCode(65 + i)
-    );
-
+    /* ── Ensure all teams have group assignments ── */
     const unassigned = teams.filter(t => !t.groupKey);
 
     if (unassigned.length) {
@@ -223,6 +249,12 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
                 `Use draw/group assignment first, then generate groups.`
         });
     }
+
+    /* ── Generate round-robin per group ── */
+    const groupKeys = Array.from(
+        { length: tournament.groupCount },
+        (_, i) => String.fromCharCode(65 + i)
+    );
 
     const fixtures = [];
     let nextMatchNumber = await getNextMatchNumber(guild.id, tournament._id);
@@ -234,7 +266,7 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
         const groupFixtures = buildRoundRobinFixtures({
             guildId: guild.id,
             tournament,
-            teams: groupTeams,
+            teams: normalizeTournamentTeams(groupTeams),
             phase: 'group',
             roundPrefix: `Group ${groupKey} Matchday`,
             groupKey,
@@ -257,6 +289,10 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
 
     return successReply(reply, tournament, '📦 GROUP STAGE GENERATED', fixtures.length);
 }
+
+/* ====================================================
+   KNOCKOUT GENERATOR
+==================================================== */
 
 async function generateKnockout({ guild, tournament, teams, force, reply }) {
     if (!tournament.hasKnockout) {
@@ -289,31 +325,31 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    const qualified = await getQualifiedTeams({
-        guildId: guild.id,
-        tournament,
-        teams,
-        round
-    });
+    /* ── Get qualified teams sorted by standings ── */
+    const qualified = await getQualifiedTeams({ tournament, teams });
 
     if (qualified.length < 2 || qualified.length % 2 !== 0) {
         return reply({
-            content:
-                `❌ Invalid qualified team count for **${prettyPhase(round)}**: **${qualified.length}**.`
+            content: `❌ Invalid qualified team count for **${prettyPhase(round)}**: **${qualified.length}**.`
         });
     }
 
+    /* ── Pair up teams ── */
     const pairs = [];
     for (let i = 0; i < qualified.length; i += 2) {
         pairs.push([qualified[i], qualified[i + 1]]);
     }
+
+    const isTwoLegged =
+        Array.isArray(tournament.twoLeggedRounds) &&
+        tournament.twoLeggedRounds.includes(round);
 
     const fixtures = buildKnockoutFixtures({
         guildId: guild.id,
         tournament,
         phase: round,
         pairs,
-        twoLegged: Array.isArray(tournament.twoLeggedRounds) && tournament.twoLeggedRounds.includes(round),
+        twoLegged: isTwoLegged,
         startMatchNumber: await getNextMatchNumber(guild.id, tournament._id)
     });
 
@@ -325,182 +361,20 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
     return successReply(reply, tournament, `🏆 ${prettyPhase(round).toUpperCase()} GENERATED`, fixtures.length);
 }
 
-function buildRoundRobinFixtures({
-    guildId,
-    tournament,
-    teams,
-    phase,
-    roundPrefix,
-    groupKey,
-    homeAway,
-    startMatchNumber
-}) {
-    const list = teams.map(entry => ({
+/* ====================================================
+   HELPERS
+==================================================== */
+
+/** Normalize TournamentTeam documents into the shape fixtureBuilder expects. */
+function normalizeTournamentTeams(teams) {
+    return teams.map(entry => ({
         tournamentTeamId: entry._id,
         teamId: entry.teamId?._id || entry.teamId,
         name: entry.teamId?.name || entry.teamNameSnapshot
     }));
-
-    if (list.length % 2 !== 0) list.push({ name: '__BYE__' });
-
-    const totalRounds = list.length - 1;
-    const half = list.length / 2;
-    let rotation = [...list];
-    const fixtures = [];
-    let matchNumber = startMatchNumber;
-
-    for (let round = 0; round < totalRounds; round++) {
-        for (let i = 0; i < half; i++) {
-            const home = rotation[i];
-            const away = rotation[rotation.length - 1 - i];
-
-            if (home.name === '__BYE__' || away.name === '__BYE__') continue;
-
-            fixtures.push(buildFixture({
-                guildId,
-                tournament,
-                phase,
-                groupKey,
-                roundLabel: `${roundPrefix} ${round + 1}`,
-                matchNumber: matchNumber++,
-                home,
-                away
-            }));
-        }
-
-        const fixed = rotation[0];
-        const rest = rotation.slice(1);
-        rest.unshift(rest.pop());
-        rotation = [fixed, ...rest];
-    }
-
-    if (homeAway) {
-        const firstLeg = [...fixtures];
-
-        for (const fixture of firstLeg) {
-            fixtures.push(buildFixture({
-                guildId,
-                tournament,
-                phase,
-                groupKey,
-                roundLabel: `${roundPrefix} ${extractRoundNumber(fixture.roundLabel) + totalRounds}`,
-                matchNumber: matchNumber++,
-                home: {
-                    tournamentTeamId: fixture.awayTournamentTeamId,
-                    teamId: fixture.awayTeamId,
-                    name: fixture.awayTeam
-                },
-                away: {
-                    tournamentTeamId: fixture.homeTournamentTeamId,
-                    teamId: fixture.homeTeamId,
-                    name: fixture.homeTeam
-                }
-            }));
-        }
-    }
-
-    return fixtures;
 }
 
-function buildKnockoutFixtures({
-    guildId,
-    tournament,
-    phase,
-    pairs,
-    twoLegged,
-    startMatchNumber
-}) {
-    const fixtures = [];
-    let matchNumber = startMatchNumber;
-
-    for (let i = 0; i < pairs.length; i++) {
-        const [home, away] = pairs[i];
-        const roundLabel = `${prettyPhase(phase)} ${i + 1}`;
-        const tieKey = `${tournament.tournamentKey}_${phase}_${i + 1}`;
-
-        fixtures.push(buildFixture({
-            guildId,
-            tournament,
-            phase,
-            groupKey: null,
-            roundLabel,
-            matchNumber: matchNumber++,
-            home,
-            away,
-            aggregateTieKey: twoLegged ? tieKey : null,
-            leg: 1
-        }));
-
-        if (twoLegged) {
-            fixtures.push(buildFixture({
-                guildId,
-                tournament,
-                phase,
-                groupKey: null,
-                roundLabel,
-                matchNumber: matchNumber++,
-                home: away,
-                away: home,
-                aggregateTieKey: tieKey,
-                leg: 2
-            }));
-        }
-    }
-
-    return fixtures;
-}
-
-function buildFixture({
-    guildId,
-    tournament,
-    phase,
-    groupKey,
-    roundLabel,
-    matchNumber,
-    home,
-    away,
-    aggregateTieKey = null,
-    leg = 1
-}) {
-    return {
-        guildId,
-        tournamentId: tournament._id,
-        tournamentKey: tournament.tournamentKey,
-        phase,
-        roundLabel,
-        groupKey,
-        leg,
-        matchNumber,
-
-        homeTeam: home.name,
-        awayTeam: away.name,
-        homeTeamId: home.teamId || null,
-        awayTeamId: away.teamId || null,
-        homeTournamentTeamId: home.tournamentTeamId || home._id || null,
-        awayTournamentTeamId: away.tournamentTeamId || away._id || null,
-
-        venueType: phase === 'final' && tournament.finalNeutralVenue ? 'neutral' : 'home',
-        venueName: phase === 'final' && tournament.finalNeutralVenue ? 'Neutral Ground' : 'Home Ground',
-        scheduledAt: null,
-        status: 'Pending',
-        result: {
-            home: null,
-            away: null,
-            extraTimeHome: null,
-            extraTimeAway: null,
-            penaltiesHome: null,
-            penaltiesAway: null,
-            winner: ''
-        },
-        aggregateTieKey,
-        notes: leg > 1 ? `${roundLabel} (Leg ${leg})` : '',
-        bracket: {
-            advancesToMatchNumber: null,
-            slot: ''
-        }
-    };
-}
-
+/** Determine the first knockout round from tournament config. */
 function resolveNextKnockoutRound(tournament) {
     const rounds = Array.isArray(tournament.knockoutRounds)
         ? tournament.knockoutRounds
@@ -509,6 +383,7 @@ function resolveNextKnockoutRound(tournament) {
     return rounds[0] || 'semifinal';
 }
 
+/** Get qualified teams sorted by standings (points → GD → GF). */
 async function getQualifiedTeams({ tournament, teams }) {
     const sorted = [...teams].sort((a, b) => {
         const as = a.stats || {};
@@ -523,28 +398,16 @@ async function getQualifiedTeams({ tournament, teams }) {
         return (bs.gf || 0) - (as.gf || 0);
     });
 
-    const target =
-        tournament.knockoutTeamCount ||
-        tournament.qualifiedTeamCount ||
-        4;
+    const target = tournament.knockoutTeamCount || tournament.qualifiedTeamCount || 4;
 
     return sorted.slice(0, target).map(entry => ({
-        _id: entry._id,
         tournamentTeamId: entry._id,
         teamId: entry.teamId?._id || entry.teamId,
         name: entry.teamId?.name || entry.teamNameSnapshot
     }));
 }
 
-async function getNextMatchNumber(guildId, tournamentId) {
-    const latest = await Fixture.findOne({
-        guildId,
-        tournamentId
-    }).sort({ matchNumber: -1 }).select('matchNumber');
-
-    return latest ? latest.matchNumber + 1 : 1;
-}
-
+/** Build a success embed for fixture generation. */
 function successReply(reply, tournament, title, count) {
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
@@ -557,23 +420,4 @@ function successReply(reply, tournament, title, count) {
         .setTimestamp();
 
     return reply({ embeds: [embed] });
-}
-
-function extractRoundNumber(label) {
-    const match = String(label || '').match(/(\d+)$/);
-    return match ? Number(match[1]) : 0;
-}
-
-function prettyPhase(phase) {
-    const map = {
-        league: 'League',
-        group: 'Group',
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final'
-    };
-
-    return map[phase] || phase;
 }

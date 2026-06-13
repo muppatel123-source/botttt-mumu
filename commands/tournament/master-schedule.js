@@ -1,5 +1,18 @@
+/**
+ * master-schedule.js
+ *
+ * View the full tournament fixture list with pagination and tournament switching.
+ * Organizer-only. Supports live schedule refresh for broadcast channels.
+ *
+ * Usage:  .master-schedule [phase]
+ * Slash:  /master-schedule [phase]
+ *
+ * Aliases: masterschedule, fullschedule, allfixtures
+ */
+
 const {
     SlashCommandBuilder,
+    PermissionFlagsBits,
     EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
@@ -8,14 +21,14 @@ const {
 } = require('discord.js');
 
 const { Fixture, Team } = require('../../models/Tournament');
-
 const {
     getDefaultTournament,
     getSelectableTournaments,
     getTournamentByKey
 } = require('../../utils/getTournament');
-
 const { isOrganizer } = require('../../utils/isOrganizer');
+const { prettyPhase, truncate } = require('../../utils/displayHelpers');
+const { extractRoundNumber } = require('../../utils/fixtureBuilder');
 
 const LIVE_KEY = 'live_master_schedule';
 
@@ -24,6 +37,9 @@ module.exports = {
     description: 'View full tournament fixture list.',
     usage: '.master-schedule [phase]',
     aliases: ['masterschedule', 'fullschedule', 'allfixtures'],
+    hidden: true,
+    cooldown: 5,
+    userPermissions: [PermissionFlagsBits.SendMessages],
 
     data: new SlashCommandBuilder()
         .setName('master-schedule')
@@ -44,6 +60,10 @@ module.exports = {
                 )
         ),
 
+    /* ================================================
+       PREFIX
+    ================================================ */
+
     async execute(message, args) {
         try {
             if (!message.guild) return;
@@ -60,10 +80,14 @@ module.exports = {
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
-            console.error('master-schedule prefix error:', error);
+            console.error('[master-schedule] prefix error:', error);
             return message.reply('❌ Failed to load full schedule.');
         }
     },
+
+    /* ================================================
+       SLASH
+    ================================================ */
 
     async slashExecute(interaction) {
         try {
@@ -81,11 +105,20 @@ module.exports = {
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
-            console.error('master-schedule slash error:', error);
-            return interaction.editReply('❌ Failed to load full schedule.');
+            console.error('[master-schedule] slash error:', error);
+
+            if (interaction.deferred || interaction.replied) {
+                return interaction.editReply('❌ Failed to load full schedule.');
+            }
+
+            return interaction.reply({ content: '❌ Failed to load full schedule.', ephemeral: true });
         }
     }
 };
+
+/* ====================================================
+   CORE LOGIC
+==================================================== */
 
 async function runMasterSchedule({ client, guild, userId, phase, reply }) {
     const tournaments = await getSelectableTournaments(guild.id);
@@ -117,7 +150,6 @@ async function runMasterSchedule({ client, guild, userId, phase, reply }) {
         if (interaction.isStringSelectMenu() && interaction.customId === 'ms_tournament') {
             const selected = await getTournamentByKey(guild.id, interaction.values[0]);
             if (selected) tournament = selected;
-
             state = await buildState({ guild, tournament, tournaments, phase });
         }
 
@@ -144,6 +176,10 @@ async function runMasterSchedule({ client, guild, userId, phase, reply }) {
     });
 }
 
+/* ====================================================
+   STATE BUILDER
+==================================================== */
+
 async function buildState({ guild, tournament, tournaments, phase }) {
     const query = {
         guildId: guild.id,
@@ -162,6 +198,7 @@ async function buildState({ guild, tournament, tournaments, phase }) {
     );
 
     const pages = buildMatchdayPages(fixtures);
+
     const firstPendingPage = pages.findIndex(page =>
         page.fixtures.some(f => f.status === 'Pending' || f.status === 'Live')
     );
@@ -176,6 +213,10 @@ async function buildState({ guild, tournament, tournaments, phase }) {
         stadiumMap
     };
 }
+
+/* ====================================================
+   EMBED & COMPONENTS
+==================================================== */
 
 function buildEmbed(state) {
     const current = state.pages[state.page];
@@ -200,6 +241,41 @@ function buildEmbed(state) {
 
     return embed;
 }
+
+function buildComponents(state, disabled = false) {
+    return [
+        new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('ms_tournament')
+                .setPlaceholder('Select tournament')
+                .setDisabled(disabled)
+                .addOptions(
+                    state.tournaments.slice(0, 25).map(t => ({
+                        label: truncate(t.name || t.tournamentKey, 80),
+                        description: `Key: ${t.tournamentKey}`,
+                        value: t.tournamentKey,
+                        default: t.tournamentKey === state.tournament.tournamentKey
+                    }))
+                )
+        ),
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('ms_prev')
+                .setLabel('⬅️ Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disabled || state.page <= 0),
+            new ButtonBuilder()
+                .setCustomId('ms_next')
+                .setLabel('Next ➡️')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(disabled || state.page >= state.pages.length - 1)
+        )
+    ];
+}
+
+/* ====================================================
+   PAGE BUILDER
+==================================================== */
 
 function buildMatchdayPages(fixtures) {
     const map = new Map();
@@ -226,6 +302,10 @@ function buildMatchdayPages(fixtures) {
         }));
 }
 
+/* ====================================================
+   FORMATTING
+==================================================== */
+
 function formatFixture(fixture, stadiumMap) {
     const stadium =
         fixture.venueType === 'neutral'
@@ -242,44 +322,15 @@ function formatFixture(fixture, stadiumMap) {
     );
 }
 
-function buildComponents(state, disabled = false) {
-    return [
-        new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-                .setCustomId('ms_tournament')
-                .setPlaceholder('Select tournament')
-                .setDisabled(disabled)
-                .addOptions(
-                    state.tournaments.slice(0, 25).map(t => ({
-                        label: truncate(t.name || t.tournamentKey, 80),
-                        description: `Key: ${t.tournamentKey}`,
-                        value: t.tournamentKey,
-                        default: t.tournamentKey === state.tournament.tournamentKey
-                    }))
-                )
-        ),
-        new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId('ms_prev')
-                .setLabel('⬅️ Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || state.page <= 0),
-
-            new ButtonBuilder()
-                .setCustomId('ms_next')
-                .setLabel('Next ➡️')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(disabled || state.page >= state.pages.length - 1)
-        )
-    ];
-}
+/* ====================================================
+   LIVE SCHEDULE TRACKING
+==================================================== */
 
 function rememberLiveSchedule(client, guildId, message, data) {
     if (!client.liveSettings) return;
 
     const key = `${LIVE_KEY}:${guildId}`;
     const list = client.liveSettings.get(key) || [];
-
     const filtered = list.filter(item => item.messageId !== message.id);
 
     filtered.push({
@@ -291,12 +342,15 @@ function rememberLiveSchedule(client, guildId, message, data) {
     client.liveSettings.set(key, filtered);
 }
 
+/**
+ * Refresh all live master schedule messages for a tournament.
+ * Called after fixture changes (report, edit, force, etc.).
+ */
 async function refreshLiveMasterSchedules(client, guildId, tournamentKey) {
     if (!client.liveSettings) return;
 
     const key = `${LIVE_KEY}:${guildId}`;
     const list = client.liveSettings.get(key) || [];
-
     const fresh = [];
 
     for (const item of list) {
@@ -312,16 +366,9 @@ async function refreshLiveMasterSchedules(client, guildId, tournamentKey) {
 
             const tournaments = await getSelectableTournaments(guildId);
             const tournament = await getTournamentByKey(guildId, tournamentKey);
-
             if (!tournament) continue;
 
-            const state = await buildState({
-                guild,
-                tournament,
-                tournaments,
-                phase: item.phase
-            });
-
+            const state = await buildState({ guild, tournament, tournaments, phase: item.phase });
             state.page = Math.min(item.page ?? state.page, state.pages.length - 1);
 
             await message.edit({
@@ -331,36 +378,11 @@ async function refreshLiveMasterSchedules(client, guildId, tournamentKey) {
 
             fresh.push(item);
         } catch {
-            // old/deleted message, skip it
+            // Message deleted or channel gone — skip
         }
     }
 
     client.liveSettings.set(key, fresh);
-}
-
-function prettyPhase(phase) {
-    const map = {
-        league: 'League',
-        group: 'Group Stage',
-        qualifier: 'Qualifier',
-        eliminator: 'Eliminator',
-        quarterfinal: 'Quarter Final',
-        semifinal: 'Semi Final',
-        final: 'Final',
-        custom: 'Custom'
-    };
-
-    return map[phase] || phase || 'Fixture';
-}
-
-function extractRoundNumber(label) {
-    const match = String(label || '').match(/(\d+)$/);
-    return match ? Number(match[1]) : 0;
-}
-
-function truncate(text, max) {
-    const value = String(text || '');
-    return value.length > max ? value.slice(0, max - 3) + '...' : value;
 }
 
 module.exports.refreshLiveMasterSchedules = refreshLiveMasterSchedules;
