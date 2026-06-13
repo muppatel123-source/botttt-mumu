@@ -248,12 +248,27 @@ async function buildPayload({ guild, globalPlayer, tournament, tournaments, view
     const globalTrophies = [];
     const globalAwards = [];
 
+    // Build guild name map for cross-server labels
+    const guildNameMap = new Map();
+
     for (const gp of globalProfiles) {
+        // Resolve server name from client cache
+        if (gp.guildId && !guildNameMap.has(gp.guildId)) {
+            const g = guild.client.guilds.cache.get(gp.guildId);
+            guildNameMap.set(gp.guildId, g?.name || 'Unknown Server');
+        }
+
         if (Array.isArray(gp.trophies)) {
-            for (const t of gp.trophies) globalTrophies.push(t);
+            for (const t of gp.trophies) {
+                t._sourceGuildId = gp.guildId;
+                globalTrophies.push(t);
+            }
         }
         if (Array.isArray(gp.awards)) {
-            for (const a of gp.awards) globalAwards.push(a);
+            for (const a of gp.awards) {
+                a._sourceGuildId = gp.guildId;
+                globalAwards.push(a);
+            }
         }
     }
 
@@ -271,9 +286,9 @@ async function buildPayload({ guild, globalPlayer, tournament, tournaments, view
         view === 'alltime'
             ? buildAllTimeEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar })
             : view === 'trophies'
-                ? buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies })
+                ? buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies, guildNameMap })
                 : view === 'awards'
-                    ? buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards })
+                    ? buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards, guildNameMap })
                     : buildTournamentEmbed({ guild, globalPlayer, tournament, tournamentPlayer, emojis, fallbackTag, fallbackAvatar });
 
     return {
@@ -353,10 +368,10 @@ function buildAllTimeEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, 
         .setTimestamp();
 }
 
-function buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies }) {
+function buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies, guildNameMap }) {
     const trophyLines = (globalTrophies || [])
         .slice(0, 25)
-        .map(trophy => formatTrophyLine(trophy, emojis, tournamentEmojiMap))
+        .map(trophy => formatTrophyLine(trophy, emojis, tournamentEmojiMap, guild.id, guildNameMap))
         .filter(Boolean);
 
     return new EmbedBuilder()
@@ -368,7 +383,7 @@ function buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEm
         .setTimestamp();
 }
 
-function buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards }) {
+function buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards, guildNameMap }) {
     const awards = globalAwards || [];
 
     return new EmbedBuilder()
@@ -381,8 +396,9 @@ function buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, f
                     const awardEmoji = award.emoji || emojis.awards[award.awardType] || '🏅';
                     const awardName = award.name || cleanAwardTitle(award.title) || prettyAwardType(award.awardType);
                     const tournamentName = award.tournamentName || award.tournamentKey || 'Tournament';
+                    const serverLabel = buildServerLabel(award._sourceGuildId, guild.id, guildNameMap);
 
-                    return `${awardEmoji} **${tournamentName} ${awardName}**`;
+                    return `${awardEmoji} **${tournamentName} ${awardName}**${serverLabel}`;
                 }).join('\n')
                 : 'No awards earned yet.'
         )
@@ -480,11 +496,26 @@ async function getTournamentEmojiMap(guildId) {
    TROPHY & AWARD FORMATTING
 ==================================================== */
 
-function formatTrophyLine(trophy, emojis, tournamentEmojiMap) {
+/**
+ * Build a server label for cross-server trophies/awards.
+ * Returns empty string for same-server items.
+ * Returns " — ServerName" for different-server items.
+ */
+function buildServerLabel(sourceGuildId, currentGuildId, guildNameMap) {
+    if (!sourceGuildId || sourceGuildId === currentGuildId) return '';
+
+    const serverName = guildNameMap?.get(sourceGuildId) || 'Unknown Server';
+
+    return ` — ${serverName}`;
+}
+
+function formatTrophyLine(trophy, emojis, tournamentEmojiMap, currentGuildId, guildNameMap) {
     const clean = normalizeTrophy(trophy, emojis, tournamentEmojiMap);
     if (!clean) return null;
 
-    return `${clean.emoji} **${clean.tournamentName} ${clean.label}**`;
+    const serverLabel = buildServerLabel(trophy._sourceGuildId, currentGuildId, guildNameMap);
+
+    return `${clean.emoji} **${clean.tournamentName} ${clean.label}**${serverLabel}`;
 }
 
 function normalizeTrophy(trophy, emojis, tournamentEmojiMap) {
