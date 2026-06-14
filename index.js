@@ -504,6 +504,21 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
+    /* ── AI enabled check (cached per guild, 60s TTL) ── */
+    const aiCache = client._aiEnabledCache || (client._aiEnabledCache = new Map());
+    const aiCacheEntry = aiCache.get(message.guild.id);
+    let aiEnabled = true;
+    if (aiCacheEntry && Date.now() - aiCacheEntry.ts < 60000) {
+        aiEnabled = aiCacheEntry.value;
+    } else {
+        try {
+            const { ServerConfig } = require('./models/Tournament');
+            const cfg = await ServerConfig.findOne({ guildId: message.guild.id }).lean();
+            aiEnabled = cfg?.aiEnabled !== false;
+        } catch { aiEnabled = true; }
+        aiCache.set(message.guild.id, { value: aiEnabled, ts: Date.now() });
+    }
+
     const prefix = await getGuildPrefix(message.guild.id);
 
     const userAfk = client.afk.get(message.author.id);
@@ -534,7 +549,7 @@ client.on('messageCreate', async (message) => {
         if (!strippedContent && !message.reference) {
             // Pure @mention with no text — just react
             await message.react('<:hello:1488633282462744767>').catch(() => null);
-        } else if (strippedContent) {
+        } else if (strippedContent && aiEnabled) {
             // @mention with text — AI response
             try {
                 const { askFootball } = require('./utils/footballAI');
@@ -550,7 +565,7 @@ client.on('messageCreate', async (message) => {
     }
 
     /* ── Reply to bot message — AI response ── */
-    if (message.reference && !message.mentions.has(client.user)) {
+    if (aiEnabled && message.reference && !message.mentions.has(client.user)) {
         try {
             const referencedMsg = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
             if (referencedMsg && referencedMsg.author.id === client.user.id) {
@@ -583,7 +598,7 @@ client.on('messageCreate', async (message) => {
     }
 
     /* ── Football AI: # prefix ── */
-    if (message.content.startsWith('#') && message.content.length > 1) {
+    if (aiEnabled && message.content.startsWith('#') && message.content.length > 1) {
         const question = message.content.slice(1).trim();
         if (question) {
             try {
@@ -609,18 +624,20 @@ client.on('messageCreate', async (message) => {
         const aiChannels = serverConfig?.aiOnlyChannels || [];
 
         if (aiChannels.includes(message.channel.id)) {
-            // AI-only channel — block the command, but try AI first
-            const commandText = message.content.slice(prefix.length).trim();
-            if (commandText) {
-                try {
-                    const { askFootball } = require('./utils/footballAI');
-                    message.channel.sendTyping().catch(() => null);
-                    const answer = await askFootball(commandText, message.guild.id);
-                    if (answer) {
-                        return message.reply(answer);
+            // AI-only channel — block the command, try AI if enabled
+            if (aiEnabled) {
+                const commandText = message.content.slice(prefix.length).trim();
+                if (commandText) {
+                    try {
+                        const { askFootball } = require('./utils/footballAI');
+                        message.channel.sendTyping().catch(() => null);
+                        const answer = await askFootball(commandText, message.guild.id);
+                        if (answer) {
+                            return message.reply(answer);
+                        }
+                    } catch (error) {
+                        console.error('[footballAI] ai-only channel error:', error);
                     }
-                } catch (error) {
-                    console.error('[footballAI] ai-only channel error:', error);
                 }
             }
             return;
