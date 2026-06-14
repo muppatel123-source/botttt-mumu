@@ -1,16 +1,9 @@
 /**
  * footballAI.js
  *
- * General Q&A AI with football focus. Fun personality, roasting, concise answers.
+ * General Q&A AI. Normal chat personality, fun and helpful.
+ * Only brings up tournament context when someone specifically asks about it.
  * Powered by Groq (primary) with Gemini fallback.
- *
- * Features:
- *   - Answers any question (not just football)
- *   - Fun/roasting personality
- *   - 1-2 sentences (short and punchy)
- *   - Web search for recent/current questions
- *   - Bot tournament context (knows your leagues)
- *   - Non-football questions still answered normally
  *
  * Triggered by: # prefix, @bot mention, reply to bot
  */
@@ -18,23 +11,24 @@
 /* ── System prompt builder ── */
 
 function buildSystemPrompt(tournamentContext) {
-    let prompt = `You are MUMU — a football-obsessed, witty, slightly savage bot who roasts people while dropping knowledge. You're like that one friend who watches too much football and never lets anyone forget it.
+    let prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality. Think of yourself as that one friend who's helpful but can't resist a light roast.
 
 Rules:
-1. Answer ANY question — football, bot leagues, general knowledge, whatever. You know things.
+1. Answer ANY question — sports, tech, random facts, whatever.
 2. For multiple choice: answer with ONLY the letter (A, B, C, or D). No explanation.
-3. For other questions: 1-2 sentences maximum. Be punchy, fun, lightly roast the user if the question is silly, but always give the real answer.
+3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something recent, say so honestly but still give your best guess.
 5. NEVER refuse to answer. NEVER say "I cannot" or "I don't have access." Just answer.
+6. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
 
 Personality examples:
-Q: Who won the 2022 World Cup? → Argentina, finally. Messi got his happy ending, was about time honestly 😤
-Q: What is the capital of France? → Paris. The only thing French football wins these days 😂
-Q: Who has the most Ballon d'Ors? → Messi with 8. Ronaldo is still crying about it 🐐
-Q: What is 2+2? → 4. That's the kind of math even a defender can do 🧮`;
+Q: Who won the 2022 World Cup? → Argentina. Messi finally got his happy ending 🐐
+Q: What is the capital of France? → Paris. Lovely city, terrible traffic 🗼
+Q: What is 2+2? → 4. I believe in you 🧮
+Q: How do I cook rice? → 1 cup rice, 2 cups water, bring to boil, simmer 15 mins. You got this 🍚`;
 
     if (tournamentContext) {
-        prompt += `\n\n6. IMPORTANT: This bot runs football tournaments on Discord. Here's the current server context:\n${tournamentContext}\nIf someone asks about their league, team, standings, or anything about the bot's tournaments — use this info to answer.`;
+        prompt += `\n\nYou also help run a football tournament bot on this Discord server. Here's what's currently active:\n${tournamentContext}\nOnly mention this if someone asks about their league, tournament, team, standings, or anything bot-related.`;
     }
 
     const today = new Date();
@@ -89,14 +83,12 @@ async function askGroq(question, systemPrompt) {
     if (!groq) return null;
 
     try {
-        const messages = [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: question }
-        ];
-
         const response = await groq.chat.completions.create({
             model: 'llama-3.3-70b-versatile',
-            messages,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: question }
+            ],
             max_tokens: 150,
             temperature: 0.7
         });
@@ -180,13 +172,11 @@ async function searchWebIfNeeded(question) {
     return '';
 }
 
-/* ── Bot tournament context ── */
+/* ── Bot tournament context (only loaded if question seems bot-related) ── */
 
 async function buildTournamentContext(guildId) {
     try {
-        const { TournamentSettings } = require('../models/Tournament');
-        const { Team } = require('../models/Tournament');
-        const { Player } = require('../models/Tournament');
+        const { TournamentSettings, Team } = require('../models/Tournament');
 
         const tournaments = await TournamentSettings.find({
             guildId,
@@ -214,6 +204,23 @@ async function buildTournamentContext(guildId) {
     }
 }
 
+/**
+ * Check if the question seems related to the bot's tournaments.
+ * Only then do we load tournament context.
+ */
+function isBotTournamentQuestion(question) {
+    const lower = question.toLowerCase();
+    const keywords = [
+        'tournament', 'league', 'standings', 'table', 'fixtures',
+        'my team', 'my stats', 'mystats', 'captain', 'vice captain',
+        'free agent', 'transfer', 'register', 'draw', 'knockout',
+        'group', 'qualification', 'my league', 'bot tournament',
+        'next match', 'schedule', 'top stats', 'mvp', 'golden boot',
+        'ballon d', 'trophy', 'award', 'season', 'phase'
+    ];
+    return keywords.some(kw => lower.includes(kw));
+}
+
 /* ── Main entry point ── */
 
 /**
@@ -228,8 +235,11 @@ async function askFootball(question, guildId) {
 
     const cleanQ = question.trim();
 
-    // Build context
-    const tournamentContext = guildId ? await buildTournamentContext(guildId) : '';
+    // Only load tournament context if the question seems related
+    const tournamentContext = (guildId && isBotTournamentQuestion(cleanQ))
+        ? await buildTournamentContext(guildId)
+        : '';
+
     const systemPrompt = buildSystemPrompt(tournamentContext);
 
     // Search web for recent questions
