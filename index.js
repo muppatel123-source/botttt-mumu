@@ -526,8 +526,44 @@ client.on('messageCreate', async (message) => {
         });
     }
 
+    /* ── Bot mention: react only on pure @mention (no other text), AI reply on mention with text ── */
     if (message.mentions.has(client.user) && !message.mentions.everyone) {
-        await message.react('<:hello:1488633282462744767>').catch(() => null);
+        const botMentionRegex = new RegExp(`<@!?${client.user.id}>`);
+        const strippedContent = message.content.replace(botMentionRegex, '').trim();
+
+        if (!strippedContent && !message.reference) {
+            // Pure @mention with no text — just react
+            await message.react('<:hello:1488633282462744767>').catch(() => null);
+        } else if (strippedContent) {
+            // @mention with text — AI response
+            try {
+                const { askFootball } = require('./utils/footballAI');
+                message.channel.sendTyping().catch(() => null);
+                const answer = await askFootball(strippedContent, message.guild.id);
+                if (answer) {
+                    await message.reply(answer);
+                }
+            } catch (error) {
+                console.error('[footballAI] mention error:', error);
+            }
+        }
+    }
+
+    /* ── Reply to bot message — AI response ── */
+    if (message.reference && !message.mentions.has(client.user)) {
+        try {
+            const referencedMsg = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+            if (referencedMsg && referencedMsg.author.id === client.user.id) {
+                const { askFootball } = require('./utils/footballAI');
+                message.channel.sendTyping().catch(() => null);
+                const answer = await askFootball(message.content, message.guild.id);
+                if (answer) {
+                    await message.reply(answer);
+                }
+            }
+        } catch (error) {
+            console.error('[footballAI] reply error:', error);
+        }
     }
 
     const galleryIds = client.gallery.get(message.guild.id);
@@ -553,8 +589,8 @@ client.on('messageCreate', async (message) => {
             try {
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(question);
-                if (answer && answer !== 'NOT_FOOTBALL') {
+                const answer = await askFootball(question, message.guild.id);
+                if (answer) {
                     await message.reply(answer);
                 }
             } catch (error) {
@@ -565,6 +601,33 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!message.content.startsWith(prefix)) return;
+
+    /* ── AI-only channel: block commands ── */
+    try {
+        const { ServerConfig } = require('./models/Tournament');
+        const serverConfig = await ServerConfig.findOne({ guildId: message.guild.id }).lean();
+        const aiChannels = serverConfig?.aiOnlyChannels || [];
+
+        if (aiChannels.includes(message.channel.id)) {
+            // AI-only channel — block the command, but try AI first
+            const commandText = message.content.slice(prefix.length).trim();
+            if (commandText) {
+                try {
+                    const { askFootball } = require('./utils/footballAI');
+                    message.channel.sendTyping().catch(() => null);
+                    const answer = await askFootball(commandText, message.guild.id);
+                    if (answer) {
+                        return message.reply(answer);
+                    }
+                } catch (error) {
+                    console.error('[footballAI] ai-only channel error:', error);
+                }
+            }
+            return;
+        }
+    } catch (error) {
+        console.error('[setaichannel] check error:', error);
+    }
 
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
