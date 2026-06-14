@@ -5,20 +5,29 @@
  * Remembers conversation context per channel.
  * Knows the bot owner/developer.
  * Suggests correct command syntax when users mess up.
- * Powered by Groq (primary) with Gemini fallback.
+ *
+ * Providers (in priority order, all free):
+ *   1. OpenRouter  — free models, 100 requests/day free
+ *   2. Together AI — $5 free credit on signup
+ *   3. Groq        — 30 requests/min free (when quota available)
+ *   4. Gemini      — 15 requests/min free (when quota available)
+ *
+ * All OpenAI-compatible providers use the same API format.
+ * Gemini uses its own SDK.
  *
  * Triggered by: # prefix, @bot mention, reply to bot
  */
 
+const axios = require('axios');
+
 /* ── Conversation history (per channel, in-memory) ── */
 const conversationHistory = new Map();
-const MAX_HISTORY = 10;           // messages per channel
-const HISTORY_TTL = 10 * 60 * 1000; // 10 minutes
+const MAX_HISTORY = 10;
+const HISTORY_TTL = 10 * 60 * 1000;
 
 function getHistory(channelId) {
     const entry = conversationHistory.get(channelId);
     if (!entry) return [];
-    // Expire if too old since last message
     if (Date.now() - entry.lastActive > HISTORY_TTL) {
         conversationHistory.delete(channelId);
         return [];
@@ -32,7 +41,6 @@ function pushHistory(channelId, role, content) {
         entry = { messages: [], lastActive: 0 };
     }
     entry.messages.push({ role, content });
-    // Keep only last N messages
     if (entry.messages.length > MAX_HISTORY) {
         entry.messages = entry.messages.slice(-MAX_HISTORY);
     }
@@ -43,7 +51,7 @@ function pushHistory(channelId, role, content) {
 /* ── Command reference builder ── */
 let commandRefCache = null;
 let commandRefBuiltAt = 0;
-const COMMAND_REF_TTL = 5 * 60 * 1000; // rebuild every 5 min
+const COMMAND_REF_TTL = 5 * 60 * 1000;
 
 function buildCommandRef() {
     if (commandRefCache && Date.now() - commandRefBuiltAt < COMMAND_REF_TTL) {
@@ -62,24 +70,21 @@ function buildCommandRef() {
         }
 
         const lines = [];
-
         const folders = fs.readdirSync(foldersPath);
         for (const folder of folders) {
             const commandsPath = path.join(foldersPath, folder);
             if (!fs.lstatSync(commandsPath).isDirectory()) continue;
-
             const files = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
             for (const file of files) {
                 try {
                     delete require.cache[require.resolve(path.join(commandsPath, file))];
                     const cmd = require(path.join(commandsPath, file));
                     if (!cmd?.name) continue;
-
                     const aliases = cmd.aliases?.length ? ` (aliases: ${cmd.aliases.join(', ')})` : '';
                     const usage = cmd.usage || `.${cmd.name}`;
                     const desc = cmd.description || '';
                     lines.push(`• .${cmd.name}${aliases} — ${usage} — ${desc}`);
-                } catch { /* skip broken files */ }
+                } catch { /* skip */ }
             }
         }
 
@@ -100,8 +105,8 @@ Rules:
 1. Answer ANY question — sports, tech, random facts, whatever.
 2. For multiple choice: answer with ONLY the letter (A, B, C, or D). No explanation.
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
-4. If you're not sure about something recent, say so honestly but still give your best guess.
-5. NEVER refuse to answer. NEVER say "I cannot" or "I don't have access." Just answer.
+4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
+5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access. If web results are provided, use them. If not, answer from your training data and give your best guess.
 6. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
 7. You remember the conversation. If someone says "what about football?" after asking about cricket GOAT, they mean "who's the football GOAT?" — keep the context.
 8. Adjust your tone to match the user. If they're casual, be casual. If they're formal, ease up on the roasting. Read the room.
@@ -115,7 +120,9 @@ Q: What is the capital of France? → Paris. Lovely city, terrible traffic 🗼
 Q: What is 2+2? → 4. I believe in you 🧮
 Q: Who made you? → One person built me — my creator. I'm a one-person project and I'm proud of it 💪
 Q: Who is the GOAT of cricket? → Sachin Tendulkar, don't even debate this 🏏
-Q: What about football? → Messi. The debate ended in 2022 🐐`;
+Q: What about football? → Messi. The debate ended in 2022 🐐
+Q: Who is winning the EPL right now? → [use web results if provided, otherwise best guess]
+Q: I can't access the internet → That's a YOU problem, I can 😂`;
 
     if (username) {
         prompt += `\n\nYou're talking to: ${displayName || username} (username: ${username}). Match their vibe.`;
@@ -139,149 +146,190 @@ Q: What about football? → Messi. The debate ended in 2022 🐐`;
     return prompt;
 }
 
-/* ── Rate-limit cooldown cache ── */
+/* ── Provider cooldown system ── */
+const providerCooldowns = new Map();
 
-const cooldowns = new Map();
-const COOLDOWN_MS = 60 * 1000;
-
-function isOnCooldown(provider) {
-    const until = cooldowns.get(provider);
+function isProviderOnCooldown(name) {
+    const until = providerCooldowns.get(name);
     if (!until) return false;
     if (Date.now() < until) return true;
-    cooldowns.delete(provider);
+    providerCooldowns.delete(name);
     return false;
 }
 
-function setCooldown(provider, retryAfterMs) {
-    cooldowns.set(provider, Date.now() + (retryAfterMs || COOLDOWN_MS));
+function setProviderCooldown(name, ms) {
+    providerCooldowns.set(name, Date.now() + ms);
 }
 
 function parseRetryMs(msg) {
     const match = String(msg).match(/retry\s*(?:in|after)\s*([\d.]+)\s*s/i);
     if (match) return Math.ceil(parseFloat(match[1]) * 1000);
-    return COOLDOWN_MS;
+    return 60 * 1000; // default 1 min
 }
 
-/* ── Groq (primary) ── */
-
-let groqClient = null;
-
-function getGroqClient() {
-    if (groqClient) return groqClient;
-    try {
-        const Groq = require('groq-sdk');
-        groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY });
-        return groqClient;
-    } catch {
-        return null;
-    }
+function isDailyQuotaError(msg) {
+    return /PerDay|daily|limit: 0/i.test(String(msg));
 }
 
-async function askGroq(messages, systemPrompt) {
-    if (!process.env.GROQ_API_KEY || isOnCooldown('groq')) return null;
+/* ── OpenAI-compatible provider call (OpenRouter, Together, Groq API) ── */
 
-    const groq = getGroqClient();
-    if (!groq) return null;
-
+async function callOpenAICompatible(baseUrl, apiKey, model, messages) {
     try {
-        const response = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-                { role: 'system', content: systemPrompt },
-                ...messages
-            ],
-            max_tokens: 200,
-            temperature: 0.7
-        });
-
-        const text = response.choices?.[0]?.message?.content;
-        return text?.trim() || null;
-    } catch (error) {
-        if (error.status === 429) {
-            setCooldown('groq', parseRetryMs(error.message));
-        }
-        console.error('[footballAI] Groq error:', error.status || error.message || error);
-        return null;
-    }
-}
-
-/* ── Gemini (fallback) ── */
-
-let geminiModel = null;
-
-function getGeminiModel() {
-    if (geminiModel) return geminiModel;
-    try {
-        const { GoogleGenerativeAI } = require('@google/generative-ai');
-        const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        geminiModel = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
-        return geminiModel;
-    } catch {
-        return null;
-    }
-}
-
-async function askGemini(messages, systemPrompt) {
-    if (!process.env.GEMINI_API_KEY || isOnCooldown('gemini')) return null;
-
-    const model = getGeminiModel();
-    if (!model) return null;
-
-    try {
-        // Convert messages to Gemini format
-        const contents = messages.map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-        }));
-
-        const result = await model.generateContent({
-            contents,
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            generationConfig: {
-                maxOutputTokens: 200,
+        const res = await axios.post(
+            `${baseUrl}/chat/completions`,
+            {
+                model,
+                messages,
+                max_tokens: 200,
                 temperature: 0.7
+            },
+            {
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                    ...(baseUrl.includes('openrouter') ? {
+                        'HTTP-Referer': 'https://discord-bot.mumu',
+                        'X-Title': 'MUMU Bot'
+                    } : {})
+                },
+                timeout: 15000
             }
-        });
+        );
 
-        const text = result.response?.text?.();
-        return text?.trim() || null;
+        return res.data?.choices?.[0]?.message?.content?.trim() || null;
     } catch (error) {
-        const msg = error.message || String(error);
-        if (msg.includes('429') || msg.includes('quota')) {
-            setCooldown('gemini', parseRetryMs(msg));
+        const status = error.response?.status;
+        const msg = JSON.stringify(error.response?.data || error.message);
+
+        if (status === 429) {
+            const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
+            setProviderCooldown(model, cooldown);
+            console.error(`[footballAI] ${model} 429 — cooldown ${Math.round(cooldown / 1000)}s`);
+        } else if (status === 402 || status === 403) {
+            setProviderCooldown(model, 24 * 60 * 60 * 1000);
+            console.error(`[footballAI] ${model} ${status} — 24h cooldown`);
+        } else {
+            console.error(`[footballAI] ${model} error: ${status || error.message}`);
         }
-        console.error('[footballAI] Gemini error:', error.message || error);
         return null;
     }
 }
 
-/* ── Web search for recent questions ── */
+/* ── Provider definitions ── */
+
+const PROVIDERS = [
+    {
+        name: 'openrouter-free',
+        active: () => !!process.env.OPENROUTER_API_KEY,
+        cooldown: () => isProviderOnCooldown('openrouter-free'),
+        call: (messages) => callOpenAICompatible(
+            'https://openrouter.ai/api/v1',
+            process.env.OPENROUTER_API_KEY,
+            'meta-llama/llama-3.3-70b-instruct:free',
+            messages
+        )
+    },
+    {
+        name: 'together',
+        active: () => !!process.env.TOGETHER_API_KEY,
+        cooldown: () => isProviderOnCooldown('together'),
+        call: (messages) => callOpenAICompatible(
+            'https://api.together.xyz/v1',
+            process.env.TOGETHER_API_KEY,
+            'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+            messages
+        )
+    },
+    {
+        name: 'groq',
+        active: () => !!process.env.GROQ_API_KEY,
+        cooldown: () => isProviderOnCooldown('groq'),
+        call: async (messages) => {
+            try {
+                const Groq = require('groq-sdk');
+                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+                const response = await groq.chat.completions.create({
+                    model: 'llama-3.3-70b-versatile',
+                    messages,
+                    max_tokens: 200,
+                    temperature: 0.7
+                });
+                return response.choices?.[0]?.message?.content?.trim() || null;
+            } catch (error) {
+                if (error.status === 429) {
+                    const msg = error.message || '';
+                    const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
+                    setProviderCooldown('groq', cooldown);
+                    console.error(`[footballAI] Groq 429 — cooldown ${Math.round(cooldown / 1000)}s`);
+                } else {
+                    console.error(`[footballAI] Groq error: ${error.status || error.message}`);
+                }
+                return null;
+            }
+        }
+    },
+    {
+        name: 'gemini',
+        active: () => !!process.env.GEMINI_API_KEY,
+        cooldown: () => isProviderOnCooldown('gemini'),
+        call: async (messages, _systemPromptUnused, systemPrompt) => {
+            let geminiModel = null;
+            try {
+                const { GoogleGenerativeAI } = require('@google/generative-ai');
+                const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+                geminiModel = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            } catch { return null; }
+
+            try {
+                const contents = messages.map(m => ({
+                    role: m.role === 'assistant' ? 'model' : 'user',
+                    parts: [{ text: m.content }]
+                }));
+
+                const result = await geminiModel.generateContent({
+                    contents,
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                    generationConfig: { maxOutputTokens: 200, temperature: 0.7 }
+                });
+
+                return result.response?.text?.()?.trim() || null;
+            } catch (error) {
+                const msg = error.message || '';
+                if (msg.includes('429') || msg.includes('quota')) {
+                    const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
+                    setProviderCooldown('gemini', cooldown);
+                    console.error(`[footballAI] Gemini 429 — cooldown ${Math.round(cooldown / 1000)}s`);
+                } else {
+                    console.error(`[footballAI] Gemini error: ${msg}`);
+                }
+                return null;
+            }
+        }
+    }
+];
+
+/* ── Web search ── */
 
 async function searchWebIfNeeded(question) {
     try {
-        const { isRecentQuestion, webSearch } = require('./webSearch');
+        const { shouldSearchWeb, webSearch } = require('./webSearch');
+        if (!shouldSearchWeb(question)) return '';
 
-        if (!isRecentQuestion(question)) return '';
-
-        console.log('[footballAI] Searching web for recent question...');
         const results = await webSearch(question, 3);
-
         if (results) {
             return `\n\nWeb search results (use these to answer accurately):\n${results}`;
         }
     } catch (error) {
         console.error('[footballAI] Web search error:', error.message || error);
     }
-
     return '';
 }
 
-/* ── Bot tournament context (only loaded if question seems bot-related) ── */
+/* ── Bot tournament context ── */
 
 async function buildTournamentContext(guildId) {
     try {
         const { TournamentSettings, Team } = require('../models/Tournament');
-
         const tournaments = await TournamentSettings.find({
             guildId,
             currentPhase: { $ne: 'completed' }
@@ -295,17 +343,13 @@ async function buildTournamentContext(guildId) {
                 guildId,
                 _id: { $in: t.registeredTeamIds || [] }
             }).catch(() => 0);
-
             lines.push(
                 `• "${t.name}" (key: ${t.tournamentKey}) — ${t.formatType || 'league'} format, ` +
                 `phase: ${t.currentPhase}, ${teamCount || t.teamCount || '?'} teams`
             );
         }
-
         return `Active tournaments:\n${lines.join('\n')}`;
-    } catch {
-        return '';
-    }
+    } catch { return ''; }
 }
 
 function isBotTournamentQuestion(question) {
@@ -321,17 +365,9 @@ function isBotTournamentQuestion(question) {
     return keywords.some(kw => lower.includes(kw));
 }
 
-/**
- * Detect if a message looks like a failed command attempt.
- * E.g. ".addplayer Mumu @mumu" where they got the args wrong.
- */
 function isCommandHelpQuestion(question) {
     const lower = question.toLowerCase();
-
-    // Starts with common prefix characters + a word that looks like a command
     if (/^[.+!$](\w+)/.test(lower)) return true;
-
-    // Asks about how to use a command
     const helpPhrases = [
         'how to use', 'how do i use', 'correct syntax', 'right way to',
         'wrong command', 'command not working', 'how to register',
@@ -339,23 +375,11 @@ function isCommandHelpQuestion(question) {
         'how to start', 'command help', 'bot commands', 'what commands',
         'list of commands', 'available commands', 'all commands'
     ];
-
     return helpPhrases.some(p => lower.includes(p));
 }
 
 /* ── Main entry point ── */
 
-/**
- * Ask the AI a question with conversation context.
- *
- * @param {string} question - The question (without # prefix)
- * @param {Object} [options]
- * @param {string} [options.guildId] - Guild ID for tournament context
- * @param {string} [options.channelId] - Channel ID for conversation history
- * @param {string} [options.username] - Discord username of the asker
- * @param {string} [options.displayName] - Display name of the asker
- * @returns {Promise<string|null>} - Answer or null if both providers fail
- */
 async function askFootball(question, options = {}) {
     if (!question || !question.trim()) return null;
 
@@ -363,7 +387,6 @@ async function askFootball(question, options = {}) {
     const channelId = options.channelId || 'default';
     const isCommandQ = isCommandHelpQuestion(cleanQ);
 
-    // Load tournament context only if relevant
     const tournamentContext = (options.guildId && isBotTournamentQuestion(cleanQ))
         ? await buildTournamentContext(options.guildId)
         : '';
@@ -375,33 +398,30 @@ async function askFootball(question, options = {}) {
         isCommandQuestion: isCommandQ
     });
 
-    // Web search for recent questions
     const webContext = await searchWebIfNeeded(cleanQ);
     const fullQuestion = webContext ? `${cleanQ}${webContext}` : cleanQ;
 
-    // Build message history
     const history = getHistory(channelId);
     const messages = [
+        { role: 'system', content: systemPrompt },
         ...history,
         { role: 'user', content: fullQuestion }
     ];
 
-    // Try Groq first
-    const groqAnswer = await askGroq(messages, systemPrompt);
-    if (groqAnswer) {
-        pushHistory(channelId, 'user', cleanQ);
-        pushHistory(channelId, 'assistant', groqAnswer);
-        return groqAnswer;
+    // Try each provider in order
+    for (const provider of PROVIDERS) {
+        if (!provider.active() || provider.cooldown()) continue;
+
+        const answer = await provider.call(messages, systemPrompt, systemPrompt);
+        if (answer) {
+            pushHistory(channelId, 'user', cleanQ);
+            pushHistory(channelId, 'assistant', answer);
+            return answer;
+        }
     }
 
-    // Fallback to Gemini
-    const geminiAnswer = await askGemini(messages, systemPrompt);
-    if (geminiAnswer) {
-        pushHistory(channelId, 'user', cleanQ);
-        pushHistory(channelId, 'assistant', geminiAnswer);
-        return geminiAnswer;
-    }
-
+    // All providers failed
+    console.error('[footballAI] All providers failed or on cooldown');
     return null;
 }
 
