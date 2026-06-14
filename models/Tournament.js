@@ -730,6 +730,16 @@ const serverConfigSchema = new mongoose.Schema(
             default: []
         },
 
+        aiOnlyChannels: {
+            type: [String],
+            default: []
+        },
+
+        aiEnabled: {
+            type: Boolean,
+            default: true
+        },
+
         emojis: {
             stats: {
             played: { type: String, default: '<:Stadium:1487010283506630776>' },
