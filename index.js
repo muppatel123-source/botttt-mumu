@@ -563,7 +563,12 @@ client.on('messageCreate', async (message) => {
             try {
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(strippedContent, message.guild.id);
+                const answer = await askFootball(strippedContent, {
+                    guildId: message.guild.id,
+                    channelId: message.channel.id,
+                    username: message.author.username,
+                    displayName: message.member?.displayName
+                });
                 if (answer) {
                     await message.reply(answer);
                 }
@@ -580,7 +585,12 @@ client.on('messageCreate', async (message) => {
             if (referencedMsg && referencedMsg.author.id === client.user.id) {
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(message.content, message.guild.id);
+                const answer = await askFootball(message.content, {
+                    guildId: message.guild.id,
+                    channelId: message.channel.id,
+                    username: message.author.username,
+                    displayName: message.member?.displayName
+                });
                 if (answer) {
                     await message.reply(answer);
                 }
@@ -613,7 +623,12 @@ client.on('messageCreate', async (message) => {
             try {
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(question, message.guild.id);
+                const answer = await askFootball(question, {
+                    guildId: message.guild.id,
+                    channelId: message.channel.id,
+                    username: message.author.username,
+                    displayName: message.member?.displayName
+                });
                 if (answer) {
                     await message.reply(answer);
                 }
@@ -633,7 +648,12 @@ client.on('messageCreate', async (message) => {
                     try {
                         const { askFootball } = require('./utils/footballAI');
                         message.channel.sendTyping().catch(() => null);
-                        const answer = await askFootball(commandText, message.guild.id);
+                        const answer = await askFootball(commandText, {
+                            guildId: message.guild.id,
+                            channelId: message.channel.id,
+                            username: message.author.username,
+                            displayName: message.member?.displayName
+                        });
                         if (answer) {
                             return message.reply(answer);
                         }
@@ -657,6 +677,27 @@ client.on('messageCreate', async (message) => {
 
     if (command) {
         await runCommand(command, message, args, false);
+    } else if (aiEnabled && commandName.length > 0) {
+        // Unknown command — AI suggests the correct syntax
+        try {
+            const { askFootball } = require('./utils/footballAI');
+            const fullInput = `${prefix}${commandName} ${args.join(' ')}`.trim();
+            message.channel.sendTyping().catch(() => null);
+            const answer = await askFootball(
+                `A user typed "${fullInput}" but that's not a valid command. Help them find the right one.`,
+                {
+                    guildId: message.guild.id,
+                    channelId: message.channel.id,
+                    username: message.author.username,
+                    displayName: message.member?.displayName
+                }
+            );
+            if (answer) {
+                await message.reply(answer);
+            }
+        } catch (error) {
+            console.error('[footballAI] command help error:', error);
+        }
     }
 });
 
