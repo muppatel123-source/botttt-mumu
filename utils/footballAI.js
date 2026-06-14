@@ -173,7 +173,8 @@ function isDailyQuotaError(msg) {
 
 /* ── OpenAI-compatible provider call (OpenRouter, Together, Groq API) ── */
 
-async function callOpenAICompatible(baseUrl, apiKey, model, messages) {
+async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownName) {
+    const cdKey = cooldownName || model;
     try {
         const res = await axios.post(
             `${baseUrl}/chat/completions`,
@@ -203,13 +204,13 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages) {
 
         if (status === 429) {
             const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
-            setProviderCooldown(model, cooldown);
-            console.error(`[footballAI] ${model} 429 — cooldown ${Math.round(cooldown / 1000)}s`);
+            setProviderCooldown(cdKey, cooldown);
+            console.error(`[footballAI] ${cdKey} 429 — cooldown ${Math.round(cooldown / 1000)}s`);
         } else if (status === 402 || status === 403) {
-            setProviderCooldown(model, 24 * 60 * 60 * 1000);
-            console.error(`[footballAI] ${model} ${status} — 24h cooldown`);
+            setProviderCooldown(cdKey, 24 * 60 * 60 * 1000);
+            console.error(`[footballAI] ${cdKey} ${status} — 24h cooldown`);
         } else {
-            console.error(`[footballAI] ${model} error: ${status || error.message}`);
+            console.error(`[footballAI] ${cdKey} error: ${status || error.message}`);
         }
         return null;
     }
@@ -217,17 +218,43 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages) {
 
 /* ── Provider definitions ── */
 
+/**
+ * Try multiple free OpenRouter models until one works.
+ */
+async function callOpenRouterFree(models, messages) {
+    for (const model of models) {
+        const cdKey = `or:${model}`;
+        if (isProviderOnCooldown(cdKey)) continue;
+
+        const result = await callOpenAICompatible(
+            'https://openrouter.ai/api/v1',
+            process.env.OPENROUTER_API_KEY,
+            model,
+            messages,
+            cdKey
+        );
+
+        if (result) return result;
+    }
+    return null;
+}
+
 const PROVIDERS = [
     {
         name: 'openrouter-free',
         active: () => !!process.env.OPENROUTER_API_KEY,
         cooldown: () => isProviderOnCooldown('openrouter-free'),
-        call: (messages) => callOpenAICompatible(
-            'https://openrouter.ai/api/v1',
-            process.env.OPENROUTER_API_KEY,
-            'meta-llama/llama-3.3-70b-instruct:free',
-            messages
-        )
+        call: (messages) => {
+            // Try these free models in order — first one that works wins
+            const freeModels = [
+                'google/gemma-3-27b-it:free',
+                'meta-llama/llama-4-scout:free',
+                'mistralai/mistral-small-3.1-24b-instruct:free',
+                'qwen/qwen3-32b:free',
+                'meta-llama/llama-3.3-70b-instruct:free'
+            ];
+            return callOpenRouterFree(freeModels, messages);
+        }
     },
     {
         name: 'together',
@@ -312,6 +339,8 @@ const PROVIDERS = [
 
 async function searchWebIfNeeded(question) {
     try {
+        // Bust require cache for webSearch
+        delete require.cache[require.resolve('./webSearch')];
         const { shouldSearchWeb, webSearch } = require('./webSearch');
         if (!shouldSearchWeb(question)) return '';
 
