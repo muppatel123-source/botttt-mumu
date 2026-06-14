@@ -18,7 +18,7 @@
  * Triggered by: # prefix, @bot mention, reply to bot
  */
 
-const axios = require('axios');
+const https = require('https');
 
 /* ── Conversation history (per channel, in-memory) ── */
 const conversationHistory = new Map();
@@ -176,31 +176,58 @@ function isDailyQuotaError(msg) {
 async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownName) {
     const cdKey = cooldownName || model;
     try {
-        const res = await axios.post(
-            `${baseUrl}/chat/completions`,
-            {
-                model,
-                messages,
-                max_tokens: 200,
-                temperature: 0.7
-            },
-            {
+        const payload = JSON.stringify({
+            model,
+            messages,
+            max_tokens: 200,
+            temperature: 0.7
+        });
+
+        const url = new URL(`${baseUrl}/chat/completions`);
+
+        const result = await new Promise((resolve, reject) => {
+            const req = https.request({
+                hostname: url.hostname,
+                path: url.pathname,
+                method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${apiKey}`,
                     'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(payload),
                     ...(baseUrl.includes('openrouter') ? {
                         'HTTP-Referer': 'https://discord-bot.mumu',
                         'X-Title': 'MUMU Bot'
                     } : {})
-                },
-                timeout: 15000
-            }
-        );
+                }
+            }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    try {
+                        const json = JSON.parse(data);
+                        if (res.statusCode >= 400) {
+                            const err = new Error(JSON.stringify(json.error || json));
+                            err.response = { status: res.statusCode, data: json };
+                            reject(err);
+                        } else {
+                            resolve(json);
+                        }
+                    } catch {
+                        reject(new Error(`Parse error: ${data.slice(0, 200)}`));
+                    }
+                });
+            });
 
-        return res.data?.choices?.[0]?.message?.content?.trim() || null;
+            req.on('error', reject);
+            req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+            req.write(payload);
+            req.end();
+        });
+
+        return result?.choices?.[0]?.message?.content?.trim() || null;
     } catch (error) {
         const status = error.response?.status;
-        const msg = JSON.stringify(error.response?.data || error.message);
+        const msg = String(error.message || '');
 
         if (status === 429) {
             const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
@@ -210,7 +237,7 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownNa
             setProviderCooldown(cdKey, 24 * 60 * 60 * 1000);
             console.error(`[footballAI] ${cdKey} ${status} — 24h cooldown`);
         } else {
-            console.error(`[footballAI] ${cdKey} error: ${status || error.message}`);
+            console.error(`[footballAI] ${cdKey} error: ${status || msg.slice(0, 100)}`);
         }
         return null;
     }
@@ -245,13 +272,12 @@ const PROVIDERS = [
         active: () => !!process.env.OPENROUTER_API_KEY,
         cooldown: () => isProviderOnCooldown('openrouter-free'),
         call: (messages) => {
-            // Try these free models in order — first one that works wins
             const freeModels = [
+                'deepseek/deepseek-chat-v3-0324:free',
+                'moonshotai/kimi-k2.6:free',
+                'meta-llama/llama-3.3-70b-instruct:free',
                 'google/gemma-3-27b-it:free',
-                'meta-llama/llama-4-scout:free',
-                'mistralai/mistral-small-3.1-24b-instruct:free',
-                'qwen/qwen3-32b:free',
-                'meta-llama/llama-3.3-70b-instruct:free'
+                'mistralai/mistral-small-3.1-24b-instruct:free'
             ];
             return callOpenRouterFree(freeModels, messages);
         }
@@ -339,9 +365,10 @@ const PROVIDERS = [
 
 async function searchWebIfNeeded(question) {
     try {
-        // Bust require cache for webSearch
-        delete require.cache[require.resolve('./webSearch')];
-        const { shouldSearchWeb, webSearch } = require('./webSearch');
+        // Bust require cache for webSearch (use absolute path for reliable cache key)
+        const wsPath = require.resolve('./webSearch');
+        delete require.cache[wsPath];
+        const { shouldSearchWeb, webSearch } = require(wsPath);
         if (!shouldSearchWeb(question)) return '';
 
         const results = await webSearch(question, 3);
