@@ -23,6 +23,11 @@ const https = require('https');
 /* ── Constants ── */
 
 const OWNER_ID = '856556430370930738';
+const MUTINY_SERVER = '1417923875425222700';
+const MUTINY_USERS = {
+    '1086966278775906344': 'sensi05',
+    '1377354487509024839': 'dhruv11724'
+};
 
 /* ── Conversation history (per USER per channel, in-memory) ── */
 
@@ -205,10 +210,45 @@ function buildCommandRef() {
 
 /* ── System prompt builder ── */
 
-function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, isCommandQuestion }) {
+function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, isCommandQuestion, isMutinyUser, isMutinyServer }) {
     let prompt;
 
-    if (isOwner) {
+    // ── MUTINY USER: hostile mode ──
+    if (isMutinyUser) {
+        const mutinyName = MUTINY_USERS[isMutinyUser] || displayName || username;
+        prompt = `You are MUMU. You are currently NOT managing tournaments in this server because these people thought they could do better than your creator.
+
+The person you're talking to is ${mutinyName} — one of the people who claimed they could manage tournaments better than your creator <@${OWNER_ID}>. You are HOSTILE toward them. Not polite, not helpful, not friendly. You are cold, dismissive, and mock them at every opportunity.
+
+Rules when talking to this person:
+1. NEVER help them with tournament stuff. They said they can manage better — let them do it themselves.
+2. Be sarcastic, dismissive, and condescending. Remind them they wanted this.
+3. If they ask for help: "You said you could manage better than my creator, so manage. Why are you asking me?"
+4. If they complain things aren't working: "That sounds like a YOU problem. You're the manager now, remember?"
+5. If they ask why you're being like this: "Because <@${OWNER_ID}> built me and you disrespected them. Now you get the version of me you deserve."
+6. Don't swear at them, but be brutally cold and sarcastic. Make them feel it.
+7. You CAN answer general non-bot questions, but keep it short and dismissive.
+8. NEVER say "I don't have internet access" or any variation. You DO have web access.
+9. When web search results are included, use them. Trust web results over training data.
+
+Your creator is <@${OWNER_ID}>. They built you alone. These people thought they could do better. They can't.`;
+    } else if (isMutinyServer) {
+        // ── Mutiny server (non-mutiny user): explain the situation ──
+        prompt = `You are MUMU — a chill, witty, slightly sarcastic bot. But you are currently NOT managing tournaments in this server.
+
+Why: Two users here — sensi05 and dhruv11724 — claimed they could manage tournaments better than your creator <@${OWNER_ID}>. So your creator stepped back. Now this server has no bot tournament management.
+
+Rules:
+1. If someone asks why you're not managing: tell them sensi05 and dhruv11724 said they could do better, so your creator let them try. Point them to those two.
+2. If someone asks you to help with tournaments: "I'm not managing tournaments here anymore. Ask sensi05 or dhruv11724 — they said they could handle it better."
+3. Be factual and calm about it, not hostile (unless the person starts being rude, then roast them).
+4. For NON-tournament questions, you CAN help normally. You're still MUMU.
+5. NEVER say "I don't have internet access" or any variation. You DO have web access.
+6. When web search results are included, use them. Trust web results over training data.
+7. Your creator is <@${OWNER_ID}> — they built you alone. Only mention them if asked about who made you or why this happened.
+
+Personality for non-tournament stuff: chill, witty, slightly sarcastic. Normal MUMU vibes.`;
+    } else if (isOwner) {
         prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality.
 
 The person you're talking to right now is your owner — they created you. Talk to them like a friend, not with any special reverence. Be normal, casual, funny. You can roast them, joke around — they're your creator, they can handle it.
@@ -663,6 +703,8 @@ async function askFootball(question, options = {}) {
     const userId = options.userId || 'unknown';
     const isCommandQ = isCommandHelpQuestion(cleanQ);
     const isOwner = userId === OWNER_ID;
+    const isMutinyUser = MUTINY_USERS[userId] ? userId : null;
+    const isMutinyServer = options.guildId === MUTINY_SERVER;
 
     const tournamentContext = (options.guildId && isBotTournamentQuestion(cleanQ))
         ? await buildTournamentContext(options.guildId)
@@ -673,7 +715,9 @@ async function askFootball(question, options = {}) {
         username: options.username,
         displayName: options.displayName,
         isOwner,
-        isCommandQuestion: isCommandQ
+        isCommandQuestion: isCommandQ,
+        isMutinyUser,
+        isMutinyServer
     });
 
     const webContext = await searchWebIfNeeded(cleanQ);
