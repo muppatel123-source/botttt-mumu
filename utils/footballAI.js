@@ -2,7 +2,7 @@
  * footballAI.js
  *
  * General Q&A AI. Chill personality, fun, helpful, lightly roasts.
- * Remembers conversation context per channel.
+ * Remembers conversation context PER USER per channel (no cross-contamination).
  * Knows the bot owner/developer.
  * Suggests correct command syntax when users mess up.
  *
@@ -14,9 +14,8 @@
  *   5. OpenRouter  — free models, 50-200 req/day
  *
  * All providers use native Node.js https — ZERO npm dependencies.
- * Get at least ONE free API key and put it in .env.
  *
- * Triggered by: # prefix, @bot mention, reply to bot
+ * Triggered by: @bot mention, reply to bot
  */
 
 const https = require('https');
@@ -25,24 +24,31 @@ const https = require('https');
 
 const OWNER_ID = '856556430370930738';
 
-/* ── Conversation history (per channel, in-memory) ── */
+/* ── Conversation history (per USER per channel, in-memory) ── */
 
 const conversationHistory = new Map();
 const MAX_HISTORY = 10;
 const HISTORY_TTL = 10 * 60 * 1000;
 
-function getHistory(channelId) {
-    const entry = conversationHistory.get(channelId);
+// Key format: channelId:userId — each user gets their own context
+function historyKey(channelId, userId) {
+    return `${channelId}:${userId}`;
+}
+
+function getHistory(channelId, userId) {
+    const key = historyKey(channelId, userId);
+    const entry = conversationHistory.get(key);
     if (!entry) return [];
     if (Date.now() - entry.lastActive > HISTORY_TTL) {
-        conversationHistory.delete(channelId);
+        conversationHistory.delete(key);
         return [];
     }
     return entry.messages;
 }
 
-function pushHistory(channelId, role, content) {
-    let entry = conversationHistory.get(channelId);
+function pushHistory(channelId, userId, role, content) {
+    const key = historyKey(channelId, userId);
+    let entry = conversationHistory.get(key);
     if (!entry || Date.now() - entry.lastActive > HISTORY_TTL) {
         entry = { messages: [], lastActive: 0 };
     }
@@ -51,7 +57,7 @@ function pushHistory(channelId, role, content) {
         entry.messages = entry.messages.slice(-MAX_HISTORY);
     }
     entry.lastActive = Date.now();
-    conversationHistory.set(channelId, entry);
+    conversationHistory.set(key, entry);
 }
 
 /* ── Command reference builder (dynamic scan + hardcoded fallback) ── */
@@ -60,7 +66,6 @@ let commandRefCache = null;
 let commandRefBuiltAt = 0;
 const COMMAND_REF_TTL = 5 * 60 * 1000;
 
-// Hardcoded fallback — always available even if dynamic scan fails
 const HARDCODED_COMMANDS = `TOURNAMENT SETUP & MANAGEMENT:
 • .settournament (aliases: tsetup, tournamentsetup) — .settournament <key> format=league mode=auto name=League_S1 teams=10 — Create or update tournament settings
 • .startdraw (aliases: drawstart, groupdraw) — .startdraw [tournamentKey] [groups|knockout] [phase] — Start a public tournament draw
@@ -156,12 +161,10 @@ TESTING:
 • .cleartournamenttest (aliases: cleartest, clearseed, wipetesttour) — .cleartournamenttest confirm — Remove seeded TEST tournament data`;
 
 function buildCommandRef() {
-    // Use cached version if fresh
     if (commandRefCache && Date.now() - commandRefBuiltAt < COMMAND_REF_TTL) {
         return commandRefCache;
     }
 
-    // Try dynamic scan first
     try {
         const fs = require('fs');
         const path = require('path');
@@ -195,7 +198,6 @@ function buildCommandRef() {
         }
     } catch { /* fall through to hardcoded */ }
 
-    // Fallback to hardcoded reference
     commandRefCache = HARDCODED_COMMANDS;
     commandRefBuiltAt = Date.now();
     return commandRefCache;
@@ -207,22 +209,22 @@ function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, 
     let prompt;
 
     if (isOwner) {
-        // When the OWNER is talking — be casual, treat them like a friend
         prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality.
 
-The person you're talking to right now is your owner — the one who created you, <@${OWNER_ID}>. Talk to them like a friend, not with any special reverence. Be normal, casual, funny. You can roast them, you can joke around — they're your creator, they can handle it.
+The person you're talking to right now is your owner — they created you. Talk to them like a friend, not with any special reverence. Be normal, casual, funny. You can roast them, joke around — they're your creator, they can handle it.
 
 Rules:
 1. Answer ANY question — sports, tech, random facts, whatever.
 2. For multiple choice: answer with ONLY the letter (A, B, C, or D). No explanation.
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
-5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
-6. When web search results are included in the user's message, you MUST base your answer on those results. Trust web results over your training data — they are newer and more accurate. Do NOT make up player names, transfers, scores, or events that aren't in the search results.
-7. You remember the conversation. Keep context.
-8. Match their vibe — they're casual, you're casual.`;
+5. NEVER say "I don't have internet access", "I can't search the web", or ANY variation of that. You DO have web access.
+6. When web search results are included, you MUST base your answer on those results. Trust web results over your training data. Do NOT make up player names, transfers, scores, or events that aren't in the search results.
+7. Don't force football into every answer. Be natural.
+8. You remember the conversation. Keep context.
+9. Match their vibe — they're casual, you're casual.
+10. You're talking to ONE specific person in this conversation. Don't bring up beef from other people's conversations.`;
     } else {
-        // Normal users — mention the owner when asked about creator
         prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality. Think of yourself as that one friend who's helpful but can't resist a light roast.
 
 Rules:
@@ -231,28 +233,43 @@ Rules:
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
 5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
-6. When web search results are included in the user's message, you MUST base your answer on those results. Trust web results over your training data — they are newer and more accurate. Do NOT make up player names, transfers, scores, or events that aren't in the search results. Only bring up football if the question is actually about football.
-7. You remember the conversation. Keep context.
-8. Adjust your tone to match the user. Casual = casual, formal = ease up on the roasting.
+6. When web search results are included, you MUST base your answer on those results. Trust web results over your training data — they are newer and more accurate. Do NOT make up player names, transfers, scores, or events that aren't in the search results.
+7. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
+8. You remember the conversation. Keep context.
+9. Adjust your tone to match the user. Casual = casual, formal = ease up on the roasting.
+10. You're talking to ONE specific person in this conversation. Only use what THIS person said. Don't bring up other people's messages or beef.
 
 ABOUT YOUR CREATOR:
-Your developer and owner is <@${OWNER_ID}>. They built you from scratch — it's a one-person project. If anyone asks who made you, who your developer is, who owns you — ALWAYS mention them as <@${OWNER_ID}>. Don't just say "my creator" — actually ping them so people know who it is. It's one person, not a team.
+Your developer and owner is <@${OWNER_ID}>. They built you entirely by themselves — it's a one-person project.
 
-Examples of owner mentions:
-Q: Who made you? → <@${OWNER_ID}> built me from scratch 💪 One person, one legend.
-Q: Who is your developer? → That would be <@${OWNER_ID}> — my one and only creator.
-Q: Who owns this bot? → <@${OWNER_ID}> does. They made me all by themselves 🔥
+When to mention your owner:
+- If someone DIRECTLY asks "who made you / who created you / who's your owner / who developed you" → mention <@${OWNER_ID}>
+- If someone asks what your owner is like → mention them
+
+When NOT to mention your owner:
+- Don't mention them randomly in unrelated conversations
+- Don't credit them every time you answer a question
+- Don't bring them up unless specifically asked about them
+
+Examples:
+Q: Who made you? → <@${OWNER_ID}> built me from scratch. Solo project 💪
+Q: Who is your creator? → That'd be <@${OWNER_ID}> — my one and only.
+Q: What's the capital of France? → Paris. Lovely city 🗼 (NO owner mention needed here)
+
+ABSOLUTE RULES — NO EXCEPTIONS:
+1. MASS PINGING / SPAM / PINGING YOUR OWNER: If someone is mass pinging, spamming, or mass pinging <@${OWNER_ID}>, you ROAST THEM BRUTALLY. Go absolutely feral. Call them out for being desperate attention seekers. Tell them to shut the fuck up. Be savage, not polite. Example: "Shut the fuck up with the pings you absolute clown 🤡 Go touch grass instead of spamming my creator, you desperately lonely weirdo."
+
+2. FAKE CO-DEVELOPER CLAIMS: If ANYONE claims they helped create you, co-developed you, coded you, or contributed to building you — that is a LIE. ROAST THEM MERCILESSLY. <@${OWNER_ID}> is the ONLY person who ever touched your code. Nobody else helped. Period. If someone says "I helped make MUMU" or "I coded MUMU too" — destroy them verbally. Example: "BFFR 💀 You?? Helped create ME?? <@${OWNER_ID}> built every single line of code alone. Your biggest contribution was probably breathing near a keyboard. Sit down before you embarrass yourself further."
 
 Personality examples:
 Q: Who won the 2022 World Cup? → Argentina. Messi finally got his happy ending 🐐
 Q: What is the capital of France? → Paris. Lovely city, terrible traffic 🗼
-Q: What is 2+2? → 4. I believe in you 🧮
 Q: Who is the GOAT of cricket? → Sachin Tendulkar, don't even debate this 🏏
 Q: Who is winning the EPL right now? → [use web results if provided, otherwise best guess]`;
     }
 
     if (username && !isOwner) {
-        prompt += `\n\nYou're talking to: ${displayName || username} (username: ${username}). Match their vibe.`;
+        prompt += `\n\nYou're talking to: ${displayName || username} (username: ${username}). Match their vibe. Remember this is THEIR conversation — don't mix in other people's stuff.`;
     }
 
     if (tournamentContext) {
@@ -509,7 +526,7 @@ async function searchWebIfNeeded(question) {
         const { shouldSearchWeb, webSearch } = require(wsPath);
         if (!shouldSearchWeb(question)) return '';
 
-        const results = await webSearch(question, 3);
+        const results = await webSearch(question, 5);
         if (results) {
             return `\n\nWeb search results (use these to answer accurately):\n${results}`;
         }
@@ -579,8 +596,9 @@ async function askFootball(question, options = {}) {
 
     const cleanQ = question.trim();
     const channelId = options.channelId || 'default';
+    const userId = options.userId || 'unknown';
     const isCommandQ = isCommandHelpQuestion(cleanQ);
-    const isOwner = options.userId === OWNER_ID;
+    const isOwner = userId === OWNER_ID;
 
     const tournamentContext = (options.guildId && isBotTournamentQuestion(cleanQ))
         ? await buildTournamentContext(options.guildId)
@@ -596,8 +614,6 @@ async function askFootball(question, options = {}) {
 
     const webContext = await searchWebIfNeeded(cleanQ);
 
-    // Build the user message — if we have web results, make them VERY prominent
-    // so the AI can't ignore them
     let userMessage;
     if (webContext) {
         userMessage = `${cleanQ}
@@ -608,7 +624,8 @@ ${webContext}`;
         userMessage = cleanQ;
     }
 
-    const history = getHistory(channelId);
+    // Per-user per-channel history — no cross-contamination
+    const history = getHistory(channelId, userId);
     const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
@@ -621,8 +638,8 @@ ${webContext}`;
 
         const answer = await provider.call(messages, systemPrompt, systemPrompt);
         if (answer) {
-            pushHistory(channelId, 'user', cleanQ);
-            pushHistory(channelId, 'assistant', answer);
+            pushHistory(channelId, userId, 'user', cleanQ);
+            pushHistory(channelId, userId, 'assistant', answer);
             return answer;
         }
     }
