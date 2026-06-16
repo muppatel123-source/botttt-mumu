@@ -566,6 +566,7 @@ client.on('messageCreate', async (message) => {
                 const answer = await askFootball(strippedContent, {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
+                    userId: message.author.id,
                     username: message.author.username,
                     displayName: message.member?.displayName
                 });
@@ -588,6 +589,7 @@ client.on('messageCreate', async (message) => {
                 const answer = await askFootball(message.content, {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
+                    userId: message.author.id,
                     username: message.author.username,
                     displayName: message.member?.displayName
                 });
@@ -626,6 +628,7 @@ client.on('messageCreate', async (message) => {
                 const answer = await askFootball(question, {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
+                    userId: message.author.id,
                     username: message.author.username,
                     displayName: message.member?.displayName
                 });
@@ -651,6 +654,7 @@ client.on('messageCreate', async (message) => {
                         const answer = await askFootball(commandText, {
                             guildId: message.guild.id,
                             channelId: message.channel.id,
+                            userId: message.author.id,
                             username: message.author.username,
                             displayName: message.member?.displayName
                         });
@@ -688,6 +692,7 @@ client.on('messageCreate', async (message) => {
                 {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
+                    userId: message.author.id,
                     username: message.author.username,
                     displayName: message.member?.displayName
                 }
