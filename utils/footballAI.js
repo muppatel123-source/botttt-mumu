@@ -6,14 +6,15 @@
  * Knows the bot owner/developer.
  * Suggests correct command syntax when users mess up.
  *
- * Providers (in priority order, all free):
- *   1. OpenRouter  — free models, 100 requests/day free
- *   2. Together AI — $5 free credit on signup
- *   3. Groq        — 30 requests/min free (when quota available)
- *   4. Gemini      — 15 requests/min free (when quota available)
+ * Providers (in priority order, ALL FREE, no credit card):
+ *   1. Gemini      — 500 req/day free (AI Studio key)
+ *   2. Cerebras    — 1M tokens/day free
+ *   3. Groq        — ~1,000 req/day free
+ *   4. Mistral     — free tier, 1 req/sec
+ *   5. OpenRouter  — free models, 50-200 req/day
  *
- * All OpenAI-compatible providers use the same API format.
- * Gemini uses its own SDK.
+ * All providers use native Node.js https — ZERO npm dependencies.
+ * Get at least ONE free API key and put it in .env.
  *
  * Triggered by: # prefix, @bot mention, reply to bot
  */
@@ -21,6 +22,7 @@
 const https = require('https');
 
 /* ── Conversation history (per channel, in-memory) ── */
+
 const conversationHistory = new Map();
 const MAX_HISTORY = 10;
 const HISTORY_TTL = 10 * 60 * 1000;
@@ -49,6 +51,7 @@ function pushHistory(channelId, role, content) {
 }
 
 /* ── Command reference builder ── */
+
 let commandRefCache = null;
 let commandRefBuiltAt = 0;
 const COMMAND_REF_TTL = 5 * 60 * 1000;
@@ -147,6 +150,7 @@ Q: I can't access the internet → That's a YOU problem, I can 😂`;
 }
 
 /* ── Provider cooldown system ── */
+
 const providerCooldowns = new Map();
 
 function isProviderOnCooldown(name) {
@@ -168,61 +172,65 @@ function parseRetryMs(msg) {
 }
 
 function isDailyQuotaError(msg) {
-    return /PerDay|daily|limit: 0/i.test(String(msg));
+    return /PerDay|daily|limit: 0|quota exceeded|RESOURCE_EXHAUSTED/i.test(String(msg));
 }
 
-/* ── OpenAI-compatible provider call (OpenRouter, Together, Groq API) ── */
+/* ── Generic HTTPS POST (for OpenAI-compatible providers) ── */
+
+function httpsPost(urlStr, headers, payload) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(urlStr);
+        const data = JSON.stringify(payload);
+        const req = https.request({
+            hostname: url.hostname,
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(data),
+                ...headers
+            }
+        }, (res) => {
+            let body = '';
+            res.on('data', chunk => body += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(body);
+                    if (res.statusCode >= 400) {
+                        const err = new Error(JSON.stringify(json.error || json));
+                        err.response = { status: res.statusCode, data: json };
+                        reject(err);
+                    } else {
+                        resolve(json);
+                    }
+                } catch {
+                    reject(new Error(`Parse error: ${body.slice(0, 200)}`));
+                }
+            });
+        });
+        req.on('error', reject);
+        req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+        req.write(data);
+        req.end();
+    });
+}
+
+/* ── OpenAI-compatible provider call (Cerebras, Groq, Mistral, OpenRouter) ── */
 
 async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownName) {
     const cdKey = cooldownName || model;
     try {
-        const payload = JSON.stringify({
-            model,
-            messages,
-            max_tokens: 200,
-            temperature: 0.7
-        });
+        const headers = { 'Authorization': `Bearer ${apiKey}` };
+        if (baseUrl.includes('openrouter')) {
+            headers['HTTP-Referer'] = 'https://discord-bot.mumu';
+            headers['X-Title'] = 'MUMU Bot';
+        }
 
-        const url = new URL(`${baseUrl}/chat/completions`);
-
-        const result = await new Promise((resolve, reject) => {
-            const req = https.request({
-                hostname: url.hostname,
-                path: url.pathname,
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(payload),
-                    ...(baseUrl.includes('openrouter') ? {
-                        'HTTP-Referer': 'https://discord-bot.mumu',
-                        'X-Title': 'MUMU Bot'
-                    } : {})
-                }
-            }, (res) => {
-                let data = '';
-                res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                    try {
-                        const json = JSON.parse(data);
-                        if (res.statusCode >= 400) {
-                            const err = new Error(JSON.stringify(json.error || json));
-                            err.response = { status: res.statusCode, data: json };
-                            reject(err);
-                        } else {
-                            resolve(json);
-                        }
-                    } catch {
-                        reject(new Error(`Parse error: ${data.slice(0, 200)}`));
-                    }
-                });
-            });
-
-            req.on('error', reject);
-            req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
-            req.write(payload);
-            req.end();
-        });
+        const result = await httpsPost(
+            `${baseUrl}/chat/completions`,
+            headers,
+            { model, messages, max_tokens: 200, temperature: 0.7 }
+        );
 
         return result?.choices?.[0]?.message?.content?.trim() || null;
     } catch (error) {
@@ -243,11 +251,48 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownNa
     }
 }
 
-/* ── Provider definitions ── */
+/* ── Gemini REST API (native https, no npm package needed) ── */
 
-/**
- * Try multiple free OpenRouter models until one works.
- */
+async function callGemini(apiKey, messages, systemPrompt) {
+    const cdKey = 'gemini';
+    try {
+        // Build Gemini contents array from OpenAI-style messages
+        const contents = [];
+        for (const m of messages) {
+            if (m.role === 'system') continue; // system handled separately
+            const role = m.role === 'assistant' ? 'model' : 'user';
+            contents.push({ role, parts: [{ text: m.content }] });
+        }
+
+        const payload = {
+            contents,
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: { maxOutputTokens: 200, temperature: 0.7 }
+        };
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+
+        const result = await httpsPost(url, {}, payload);
+
+        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+        return text?.trim() || null;
+    } catch (error) {
+        const status = error.response?.status;
+        const msg = String(error.message || '');
+
+        if (status === 429 || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+            const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
+            setProviderCooldown(cdKey, cooldown);
+            console.error(`[footballAI] Gemini 429/quota — cooldown ${Math.round(cooldown / 1000)}s`);
+        } else {
+            console.error(`[footballAI] Gemini error: ${status || msg.slice(0, 100)}`);
+        }
+        return null;
+    }
+}
+
+/* ── Try multiple free OpenRouter models until one works ── */
+
 async function callOpenRouterFree(models, messages) {
     for (const model of models) {
         const cdKey = `or:${model}`;
@@ -266,7 +311,51 @@ async function callOpenRouterFree(models, messages) {
     return null;
 }
 
+/* ── Provider definitions ── */
+
 const PROVIDERS = [
+    {
+        name: 'gemini',
+        active: () => !!process.env.GEMINI_API_KEY,
+        cooldown: () => isProviderOnCooldown('gemini'),
+        call: (messages, systemPrompt) => callGemini(process.env.GEMINI_API_KEY, messages, systemPrompt)
+    },
+    {
+        name: 'cerebras',
+        active: () => !!process.env.CEREBRAS_API_KEY,
+        cooldown: () => isProviderOnCooldown('cerebras'),
+        call: (messages) => callOpenAICompatible(
+            'https://api.cerebras.ai/v1',
+            process.env.CEREBRAS_API_KEY,
+            'llama-4-scout',
+            messages,
+            'cerebras'
+        )
+    },
+    {
+        name: 'groq',
+        active: () => !!process.env.GROQ_API_KEY,
+        cooldown: () => isProviderOnCooldown('groq'),
+        call: (messages) => callOpenAICompatible(
+            'https://api.groq.com/openai/v1',
+            process.env.GROQ_API_KEY,
+            'llama-3.3-70b-versatile',
+            messages,
+            'groq'
+        )
+    },
+    {
+        name: 'mistral',
+        active: () => !!process.env.MISTRAL_API_KEY,
+        cooldown: () => isProviderOnCooldown('mistral'),
+        call: (messages) => callOpenAICompatible(
+            'https://api.mistral.ai/v1',
+            process.env.MISTRAL_API_KEY,
+            'mistral-small-latest',
+            messages,
+            'mistral'
+        )
+    },
     {
         name: 'openrouter-free',
         active: () => !!process.env.OPENROUTER_API_KEY,
@@ -274,89 +363,16 @@ const PROVIDERS = [
         call: (messages) => {
             const freeModels = [
                 'deepseek/deepseek-chat-v3-0324:free',
+                'deepseek/deepseek-r1-0528:free',
+                'qwen/qwen3-coder-480b-a35b-instruct:free',
                 'moonshotai/kimi-k2.6:free',
                 'meta-llama/llama-3.3-70b-instruct:free',
+                'meta-llama/llama-4-scout:free',
                 'google/gemma-3-27b-it:free',
+                'google/gemini-2.0-flash-exp:free',
                 'mistralai/mistral-small-3.1-24b-instruct:free'
             ];
             return callOpenRouterFree(freeModels, messages);
-        }
-    },
-    {
-        name: 'together',
-        active: () => !!process.env.TOGETHER_API_KEY,
-        cooldown: () => isProviderOnCooldown('together'),
-        call: (messages) => callOpenAICompatible(
-            'https://api.together.xyz/v1',
-            process.env.TOGETHER_API_KEY,
-            'meta-llama/Llama-3.3-70B-Instruct-Turbo',
-            messages
-        )
-    },
-    {
-        name: 'groq',
-        active: () => !!process.env.GROQ_API_KEY,
-        cooldown: () => isProviderOnCooldown('groq'),
-        call: async (messages) => {
-            try {
-                const Groq = require('groq-sdk');
-                const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-                const response = await groq.chat.completions.create({
-                    model: 'llama-3.3-70b-versatile',
-                    messages,
-                    max_tokens: 200,
-                    temperature: 0.7
-                });
-                return response.choices?.[0]?.message?.content?.trim() || null;
-            } catch (error) {
-                if (error.status === 429) {
-                    const msg = error.message || '';
-                    const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
-                    setProviderCooldown('groq', cooldown);
-                    console.error(`[footballAI] Groq 429 — cooldown ${Math.round(cooldown / 1000)}s`);
-                } else {
-                    console.error(`[footballAI] Groq error: ${error.status || error.message}`);
-                }
-                return null;
-            }
-        }
-    },
-    {
-        name: 'gemini',
-        active: () => !!process.env.GEMINI_API_KEY,
-        cooldown: () => isProviderOnCooldown('gemini'),
-        call: async (messages, _systemPromptUnused, systemPrompt) => {
-            let geminiModel = null;
-            try {
-                const { GoogleGenerativeAI } = require('@google/generative-ai');
-                const ai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-                geminiModel = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
-            } catch { return null; }
-
-            try {
-                const contents = messages.map(m => ({
-                    role: m.role === 'assistant' ? 'model' : 'user',
-                    parts: [{ text: m.content }]
-                }));
-
-                const result = await geminiModel.generateContent({
-                    contents,
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                    generationConfig: { maxOutputTokens: 200, temperature: 0.7 }
-                });
-
-                return result.response?.text?.()?.trim() || null;
-            } catch (error) {
-                const msg = error.message || '';
-                if (msg.includes('429') || msg.includes('quota')) {
-                    const cooldown = isDailyQuotaError(msg) ? 24 * 60 * 60 * 1000 : parseRetryMs(msg);
-                    setProviderCooldown('gemini', cooldown);
-                    console.error(`[footballAI] Gemini 429 — cooldown ${Math.round(cooldown / 1000)}s`);
-                } else {
-                    console.error(`[footballAI] Gemini error: ${msg}`);
-                }
-                return null;
-            }
         }
     }
 ];
