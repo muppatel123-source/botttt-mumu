@@ -218,7 +218,7 @@ Rules:
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
 5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
-6. Don't force football into every answer. Be natural.
+6. When web search results are included in the user's message, you MUST base your answer on those results. Trust web results over your training data — they are newer and more accurate. Do NOT make up player names, transfers, scores, or events that aren't in the search results.
 7. You remember the conversation. Keep context.
 8. Match their vibe — they're casual, you're casual.`;
     } else {
@@ -231,7 +231,7 @@ Rules:
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
 5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
-6. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
+6. When web search results are included in the user's message, you MUST base your answer on those results. Trust web results over your training data — they are newer and more accurate. Do NOT make up player names, transfers, scores, or events that aren't in the search results. Only bring up football if the question is actually about football.
 7. You remember the conversation. Keep context.
 8. Adjust your tone to match the user. Casual = casual, formal = ease up on the roasting.
 
@@ -595,13 +595,24 @@ async function askFootball(question, options = {}) {
     });
 
     const webContext = await searchWebIfNeeded(cleanQ);
-    const fullQuestion = webContext ? `${cleanQ}${webContext}` : cleanQ;
+
+    // Build the user message — if we have web results, make them VERY prominent
+    // so the AI can't ignore them
+    let userMessage;
+    if (webContext) {
+        userMessage = `${cleanQ}
+
+IMPORTANT: You have web search results below. You MUST use these to answer accurately. Do NOT make up names, scores, or events that aren't in the search results. If the search results contradict your training data, trust the search results — they are more recent.
+${webContext}`;
+    } else {
+        userMessage = cleanQ;
+    }
 
     const history = getHistory(channelId);
     const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
-        { role: 'user', content: fullQuestion }
+        { role: 'user', content: userMessage }
     ];
 
     // Try each provider in order
@@ -622,5 +633,3 @@ async function askFootball(question, options = {}) {
 }
 
 module.exports = { askFootball };
-
-
