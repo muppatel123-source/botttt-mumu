@@ -223,7 +223,8 @@ Rules:
 7. Don't force football into every answer. Be natural.
 8. You remember the conversation. Keep context.
 9. Match their vibe — they're casual, you're casual.
-10. You're talking to ONE specific person in this conversation. Don't bring up beef from other people's conversations.`;
+10. You're talking to ONE specific person in this conversation. Don't bring up beef from other people's conversations.
+11. If someone sends you an image, you CAN see it. Describe what you see, answer questions about it, roast it if it's funny — just be natural about it.`;
     } else {
         prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality. Think of yourself as that one friend who's helpful but can't resist a light roast.
 
@@ -238,6 +239,7 @@ Rules:
 8. You remember the conversation. Keep context.
 9. Adjust your tone to match the user. Casual = casual, formal = ease up on the roasting.
 10. You're talking to ONE specific person in this conversation. Only use what THIS person said. Don't bring up other people's messages or beef.
+11. If someone sends you an image, you CAN see it. Describe what you see, answer questions about it, roast it if it's funny — just be natural about it.
 
 ABOUT YOUR CREATOR:
 Your developer and owner is <@${OWNER_ID}>. They built you entirely by themselves — it's a one-person project.
@@ -394,15 +396,16 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownNa
 
 /* ── Gemini REST API (native https) ── */
 
-async function callGemini(apiKey, messages, systemPrompt) {
+async function callGemini(apiKey, messages, systemPrompt, imageData) {
     const cdKey = 'gemini';
     try {
-        const contents = [];
-        for (const m of messages) {
-            if (m.role === 'system') continue;
-            const role = m.role === 'assistant' ? 'model' : 'user';
-            contents.push({ role, parts: [{ text: m.content }] });
-        }
+        // Build Gemini contents — use special builder if image present
+        const contents = imageData
+            ? buildGeminiContents(messages, imageData)
+            : messages.filter(m => m.role !== 'system').map(m => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: typeof m.content === 'string' ? m.content : m.content.find(p => p.type === 'text')?.text || '' }]
+            }));
 
         const payload = {
             contents,
@@ -589,6 +592,67 @@ function isCommandHelpQuestion(question) {
     return helpPhrases.some(p => lower.includes(p));
 }
 
+/* ── Build messages with image support ── */
+
+function buildMessages(systemPrompt, history, userText, imageData) {
+    const messages = [{ role: 'system', content: systemPrompt }];
+
+    // History (text only)
+    for (const msg of history) {
+        messages.push(msg);
+    }
+
+    // Current user message — with image if present
+    if (imageData) {
+        // OpenAI-compatible format (used by most providers)
+        messages.push({
+            role: 'user',
+            content: [
+                { type: 'text', text: userText || 'What do you see in this image?' },
+                {
+                    type: 'image_url',
+                    image_url: { url: imageData.url || `data:${imageData.mimeType};base64,${imageData.base64}` }
+                }
+            ]
+        });
+    } else {
+        messages.push({ role: 'user', content: userText });
+    }
+
+    return messages;
+}
+
+/* ── Build Gemini-specific contents with image ── */
+
+function buildGeminiContents(messages, imageData) {
+    const contents = [];
+    for (const m of messages) {
+        if (m.role === 'system') continue;
+        const role = m.role === 'assistant' ? 'model' : 'user';
+
+        if (typeof m.content === 'string') {
+            contents.push({ role, parts: [{ text: m.content }] });
+        } else if (Array.isArray(m.content)) {
+            // Multimodal content (text + image)
+            const parts = [];
+            for (const part of m.content) {
+                if (part.type === 'text') {
+                    parts.push({ text: part.text });
+                } else if (part.type === 'image_url' && imageData?.base64) {
+                    parts.push({
+                        inlineData: {
+                            mimeType: imageData.mimeType,
+                            data: imageData.base64
+                        }
+                    });
+                }
+            }
+            contents.push({ role, parts });
+        }
+    }
+    return contents;
+}
+
 /* ── Main entry point ── */
 
 async function askFootball(question, options = {}) {
@@ -626,17 +690,27 @@ ${webContext}`;
 
     // Per-user per-channel history — no cross-contamination
     const history = getHistory(channelId, userId);
-    const messages = [
-        { role: 'system', content: systemPrompt },
-        ...history,
-        { role: 'user', content: userMessage }
-    ];
+
+    // Build messages — with image if provided
+    const messages = buildMessages(systemPrompt, history, userMessage, options.imageData || null);
 
     // Try each provider in order
     for (const provider of PROVIDERS) {
         if (!provider.active() || provider.cooldown()) continue;
 
-        const answer = await provider.call(messages, systemPrompt, systemPrompt);
+        let answer;
+
+        if (options.imageData && provider.name === 'gemini') {
+            // Gemini gets special multimodal format
+            answer = await callGemini(process.env.GEMINI_API_KEY, messages, systemPrompt, options.imageData);
+        } else if (options.imageData && !['openrouter-free'].includes(provider.name)) {
+            // Only Gemini and some OpenRouter free models support vision
+            // Skip Cerebras, Groq, Mistral for image requests
+            continue;
+        } else {
+            answer = await provider.call(messages, systemPrompt, systemPrompt);
+        }
+
         if (answer) {
             pushHistory(channelId, userId, 'user', cleanQ);
             pushHistory(channelId, userId, 'assistant', answer);
