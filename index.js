@@ -88,6 +88,14 @@ const io = new Server(server);
 
 global.io = io;
 
+// Health check endpoint — UptimeRobot pings this to keep the bot alive
+app.get('/', (req, res) => {
+    res.status(200).send('OK');
+});
+app.get('/ping', (req, res) => {
+    res.status(200).send('Pong');
+});
+
 const port = process.env.PORT || 7860;
 server.listen(port, '0.0.0.0', () => {
     console.log(`🌐 Server running on ${port}`);
