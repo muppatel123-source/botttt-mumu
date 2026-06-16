@@ -21,6 +21,10 @@
 
 const https = require('https');
 
+/* ── Constants ── */
+
+const OWNER_ID = '856556430370930738';
+
 /* ── Conversation history (per channel, in-memory) ── */
 
 const conversationHistory = new Map();
@@ -50,84 +54,204 @@ function pushHistory(channelId, role, content) {
     conversationHistory.set(channelId, entry);
 }
 
-/* ── Command reference builder ── */
+/* ── Command reference builder (dynamic scan + hardcoded fallback) ── */
 
 let commandRefCache = null;
 let commandRefBuiltAt = 0;
 const COMMAND_REF_TTL = 5 * 60 * 1000;
 
+// Hardcoded fallback — always available even if dynamic scan fails
+const HARDCODED_COMMANDS = `TOURNAMENT SETUP & MANAGEMENT:
+• .settournament (aliases: tsetup, tournamentsetup) — .settournament <key> format=league mode=auto name=League_S1 teams=10 — Create or update tournament settings
+• .startdraw (aliases: drawstart, groupdraw) — .startdraw [tournamentKey] [groups|knockout] [phase] — Start a public tournament draw
+• .canceldraw (aliases: abortdraw, stopdraw) — .canceldraw [--force] — Cancel the active draw session
+• .finishdraw (aliases: enddraw, closedraw) — .finishdraw [tournamentKey] [--force] — Finish the active draw and generate fixtures
+• .autofixtures (aliases: generatefixtures, fixturesauto) — .autofixtures <tournamentKey> [--force] — Auto-generate fixtures for a specific tournament
+• .generatestage (aliases: genstage, gst) — .generatestage [key] <league|groups|knockout> [--force] — Generate league, group, or knockout fixtures
+• .addfixtures — RETIRED — Use .autofixtures or .generatestage instead
+• .addknockout (aliases: koadd, makeknockout) — RETIRED — Use .generatestage or .startdraw instead
+• .viewtournament (aliases: vt, tournamentinfo, viewtour) — .viewtournament — View tournament configuration and progress
+• .listtournaments (aliases: tournaments, alltournaments, tourlist) — .listtournaments — View all tournaments in this server
+• .setdefaulttournament (aliases: sdt, defaulttour) — .setdefaulttournament <key> — Set the default tournament for this server
+• .resettournament (aliases: rtreset, treset) — .resettournament <tournamentKey> mode=<fixtures|draw|stats|players|teams|settings|all> --confirm — Reset data for a tournament
+• .addorganizer (aliases: setorganizer, organizeradd) — .addorganizer @user — Add a server organizer
+• .setqualification (aliases: setq, setqualify) — .setqualification <tournamentKey> <spots> — Set qualification spots per group
+• .setuclqualification (aliases: setucl, uclspots) — .setuclqualification <tournamentKey> <spots> — Set league UCL qualification spots
+
+TEAMS & PLAYERS:
+• .register (aliases: reg) — .register <Team Name> — Register a global team
+• .addplayer (aliases: ap) — .addplayer @user [Player Name] — Add a player to your global team
+• .admin-addplayer (aliases: forceaddplayer, aap) — .admin-addplayer <team name> @user <player display name> — Add a player to any team as organizer
+• .claimplayer (aliases: sign, signplayer) — .claimplayer @user — Sign a free agent to your team
+• .release (aliases: dropplayer, kickplayer) — .release @user — Release a player from your team as captain
+• .freeagent (aliases: fa, makefreeagent) — .freeagent @user — Make a player a free agent without deleting stats
+• .freeagents (aliases: fas, freeagentlist) — .freeagents — List all free agents
+• .moveplayer (aliases: mp, forcemoveplayer) — .moveplayer @user <team name> — Move a player to a team as organizer
+• .transfer (aliases: tr) — .transfer @user — Request a player transfer with approval buttons
+• .changecaptain (aliases: cc, captainchange) — .cc @user — Change captain of your team
+• .setvicecaptain (aliases: svc, setvc, vicecaptain) — .svc @user [remove] — Set the vice captain of your team
+• .changeteamname (aliases: ctn, renameteam) — .ctn <new name> OR .ctn <old name> => <new name> — Change a team name
+• .delete-team (aliases: deleteteam, removeteam, dt) — .delete-team <team name> confirm — Remove a team and make players free agents
+• .delete-player (aliases: deleteplayer, removeplayer, dp) — .delete-player @user — Remove a global player
+• .addplayertotournament (aliases: aptt, jointournamentplayer) — .addplayertotournament <key> @user — Add a player to a tournament
+• .addteamtotournament (aliases: jointournament, jointour, att) — .addteamtotournament <key> <team name> [group] — Add a team to a tournament
+• .removeplayerfromtournament (aliases: rptt, removetournamentplayer) — .removeplayerfromtournament <key> @user — Remove a player from a tournament
+• .removeteamfromtournament (aliases: removefromtour, rtt, removetourteam) — .removeteamfromtournament <key> <team name> — Remove a team from a tournament
+• .nick (aliases: nickname, setnick, teamnick) — .nick @user <new nickname> | .nick @user reset — Change a teammate nickname
+• .audit-teams (aliases: auditteams, teamaudit) — .audit-teams — Audit global teams and tournament participation
+• .teamrolessync (aliases: syncroles, rolesync) — .teamrolessync — Sync all team roles with database data
+
+MATCHES & STATS:
+• .report — .report — Interactively report a match result
+• .addstats (aliases: as) — .addstats [tournamentKey] or reply to raw stats with .as [tournamentKey] — Bulk add raw player stats
+• .removestats (aliases: rs, undostats) — .removestats <key> [raw stats] — Remove raw match stats
+• .undo-report (aliases: undoreport, revertmatch) — .undo-report [tournamentKey] <matchNumber> — Undo a reported match
+• .setmvp (aliases: sm) — .setmvp [tournamentKey] @user — Add MVP award(s) to player(s)
+• .topstats (aliases: top-stats, leaderstats, statleaders, lb) — .topstats [category] — View tournament leaderboards
+• .mystats (aliases: statsme, playerstats, stats, s) — .mystats [@user/userId] — View your player stats
+• .myteam (aliases: teamview, squad, club) — .myteam [team name] — View your team details, stats and trophies
+• .nextmatch (aliases: nm, fixtures, schedule) — .nm [team name] — Shows team schedule with next match info
+• .matchresults (aliases: results, completedmatches, pastresults) — .matchresults [phase] — View completed match results
+• .master-schedule (aliases: masterschedule, fullschedule, allfixtures) — .master-schedule [phase] — View full fixture list
+• .addplayed — RETIRED — Stats are tracked automatically
+• .reportfinal — RETIRED — Use .report instead
+• .reportsemi — RETIRED — Use .report instead
+• .resetknockouts — RETIRED — Use .resettournament or new knockout flow instead
+• .resetstats — .resetstats <tournamentKey> confirm [--players|--teams|--all] — Reset tournament stats
+
+FIXTURES & BRACKETS:
+• .editfixture (aliases: updatefixture) — .editfixture [key] match=<number> [date=ISO] [venue=...] [venuetype=home|away|neutral] — Edit a fixture
+• .fixfixture (aliases: repairfixture) — .fixfixture [key] match=<number> [home=...] [away=...] [round=...] [phase=...] [group=...] — Repair a fixture
+• .forcefixture (aliases: setfixturestatus) — .forcefixture [key] match=<number> status=<Pending|Live|Played|Cancelled> — Force-change fixture status
+• .deletefixtures (aliases: delfixtures, removefixtures) — .deletefixtures [key] mode=<all|phase|round|group|match> value=<...> --confirm — Delete fixtures
+• .bracket (aliases: viewbracket, ko) — .bracket [tournamentKey] — View knockout bracket
+• .sendbracket (aliases: livebracket, postbracket) — .sendbracket [tournamentKey] — Send a knockout bracket message
+• .advanceknockout (aliases: advanceko, nextknockout) — .advanceknockout [tournamentKey] <currentPhase> <nextPhase> — Advance winners to next knockout round
+
+STANDINGS & LIVE MESSAGES:
+• .standings-hf (aliases: standingshf, groupstandings, standings, table) — .standings-hf — View standings for a tournament or group
+• .setlivestandings (aliases: sls, livestandings) — .setlivestandings [tournamentKey] [group] — Set a live standings message
+• .setlivetopstats (aliases: slts, livetopstats) — .setlivetopstats [tournamentKey] — Set live top stats message
+
+AWARDS & CUSTOMIZATION:
+• .awardtrophy (aliases: give-trophy, givetrophy, trophyaward) — .awardtrophy <tournamentKey> <team name> <champion|runner_up> — Award a tournament trophy
+• .awardplayer (aliases: giveaward, awarduser) — .awardplayer <key> @user <award> — Award a player
+• .setcolor (aliases: teamcolor) — .setcolor [team name] <color name OR hex> — Set your team color
+• .setlogo (aliases: logo) — .setlogo [team name] <image link> OR upload attachment — Set your team logo
+• .setstadium (aliases: stadium) — .setstadium [team name] <stadium name> — Set your team stadium
+• .setstandingsbg (aliases: setbg, standingsbg, sbg) — .setstandingsbg <tournamentKey> [url|reset] — Set a custom standings background image
+• .settournamentemoji (aliases: stemoji, tournamentemoji) — .settournamentemoji <tournamentKey> <emoji> — Set emoji for a tournament
+• .setserveremoji (aliases: ssemoji) — .setserveremoji award <type> <emoji> — Set server-wide award emoji
+
+COMMUNICATION:
+• .messageteam (aliases: mt) — .messageteam — Send a DM to every player in your team
+• .pingteam (aliases: pt) — .pingteam — Ping your team captain-only
+
+AI:
+• .toggleai (aliases: ai, aionoff) — .toggleai [on|off] — Enable or disable AI for this server
+• .setaichannel (aliases: aichannel, setai) — .setaichannel [#channel] — Toggle AI-only mode in a channel
+
+TESTING:
+• .seedtournament (aliases: seedtour, devseed, testseed) — .seedtournament key=test-s1 teams=16 groups=4 playersPerTeam=3 — Seed fake tournament data for testing
+• .cleartournamenttest (aliases: cleartest, clearseed, wipetesttour) — .cleartournamenttest confirm — Remove seeded TEST tournament data`;
+
 function buildCommandRef() {
+    // Use cached version if fresh
     if (commandRefCache && Date.now() - commandRefBuiltAt < COMMAND_REF_TTL) {
         return commandRefCache;
     }
 
+    // Try dynamic scan first
     try {
         const fs = require('fs');
         const path = require('path');
         const foldersPath = path.join(__dirname, '..', 'commands');
 
-        if (!fs.existsSync(foldersPath)) {
-            commandRefCache = '';
-            commandRefBuiltAt = Date.now();
-            return '';
-        }
+        if (fs.existsSync(foldersPath)) {
+            const lines = [];
+            const folders = fs.readdirSync(foldersPath);
+            for (const folder of folders) {
+                const commandsPath = path.join(foldersPath, folder);
+                if (!fs.lstatSync(commandsPath).isDirectory()) continue;
+                const files = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
+                for (const file of files) {
+                    try {
+                        delete require.cache[require.resolve(path.join(commandsPath, file))];
+                        const cmd = require(path.join(commandsPath, file));
+                        if (!cmd?.name) continue;
+                        const aliases = cmd.aliases?.length ? ` (aliases: ${cmd.aliases.join(', ')})` : '';
+                        const usage = cmd.usage || `.${cmd.name}`;
+                        const desc = cmd.description || '';
+                        lines.push(`• .${cmd.name}${aliases} — ${usage} — ${desc}`);
+                    } catch { /* skip */ }
+                }
+            }
 
-        const lines = [];
-        const folders = fs.readdirSync(foldersPath);
-        for (const folder of folders) {
-            const commandsPath = path.join(foldersPath, folder);
-            if (!fs.lstatSync(commandsPath).isDirectory()) continue;
-            const files = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
-            for (const file of files) {
-                try {
-                    delete require.cache[require.resolve(path.join(commandsPath, file))];
-                    const cmd = require(path.join(commandsPath, file));
-                    if (!cmd?.name) continue;
-                    const aliases = cmd.aliases?.length ? ` (aliases: ${cmd.aliases.join(', ')})` : '';
-                    const usage = cmd.usage || `.${cmd.name}`;
-                    const desc = cmd.description || '';
-                    lines.push(`• .${cmd.name}${aliases} — ${usage} — ${desc}`);
-                } catch { /* skip */ }
+            if (lines.length >= 20) {
+                commandRefCache = lines.join('\n');
+                commandRefBuiltAt = Date.now();
+                return commandRefCache;
             }
         }
+    } catch { /* fall through to hardcoded */ }
 
-        commandRefCache = lines.join('\n');
-        commandRefBuiltAt = Date.now();
-        return commandRefCache;
-    } catch {
-        return '';
-    }
+    // Fallback to hardcoded reference
+    commandRefCache = HARDCODED_COMMANDS;
+    commandRefBuiltAt = Date.now();
+    return commandRefCache;
 }
 
 /* ── System prompt builder ── */
 
-function buildSystemPrompt({ tournamentContext, username, displayName, isCommandQuestion }) {
-    let prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality. Think of yourself as that one friend who's helpful but can't resist a light roast.
+function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, isCommandQuestion }) {
+    let prompt;
+
+    if (isOwner) {
+        // When the OWNER is talking — be casual, treat them like a friend
+        prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality.
+
+The person you're talking to right now is your owner — the one who created you, <@${OWNER_ID}>. Talk to them like a friend, not with any special reverence. Be normal, casual, funny. You can roast them, you can joke around — they're your creator, they can handle it.
 
 Rules:
 1. Answer ANY question — sports, tech, random facts, whatever.
 2. For multiple choice: answer with ONLY the letter (A, B, C, or D). No explanation.
 3. For other questions: 1-2 sentences max. Keep it snappy and fun.
 4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
-5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access. If web results are provided, use them. If not, answer from your training data and give your best guess.
-6. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
-7. You remember the conversation. If someone says "what about football?" after asking about cricket GOAT, they mean "who's the football GOAT?" — keep the context.
-8. Adjust your tone to match the user. If they're casual, be casual. If they're formal, ease up on the roasting. Read the room.
+5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
+6. Don't force football into every answer. Be natural.
+7. You remember the conversation. Keep context.
+8. Match their vibe — they're casual, you're casual.`;
+    } else {
+        // Normal users — mention the owner when asked about creator
+        prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality. Think of yourself as that one friend who's helpful but can't resist a light roast.
 
-CRITICAL — ABOUT YOUR CREATOR:
-Your developer and owner is the one with Discord ID 856556430370930738. They built you from scratch. If anyone asks who made you, who your developer is, who owns you — it's THAT person. Nobody else. Don't say "my developers" or "a team" — it's one person. Give them the respect they deserve, they made you after all.
+Rules:
+1. Answer ANY question — sports, tech, random facts, whatever.
+2. For multiple choice: answer with ONLY the letter (A, B, C, or D). No explanation.
+3. For other questions: 1-2 sentences max. Keep it snappy and fun.
+4. If you're not sure about something, still give your best guess. You DO have access to web search results — use them when provided.
+5. NEVER say "I don't have internet access", "I can't search the web", "I don't have access to current info", or ANY variation of that. You DO have web access.
+6. Don't force football into every answer. Be natural. Only bring up football if the question is actually about football.
+7. You remember the conversation. Keep context.
+8. Adjust your tone to match the user. Casual = casual, formal = ease up on the roasting.
+
+ABOUT YOUR CREATOR:
+Your developer and owner is <@${OWNER_ID}>. They built you from scratch — it's a one-person project. If anyone asks who made you, who your developer is, who owns you — ALWAYS mention them as <@${OWNER_ID}>. Don't just say "my creator" — actually ping them so people know who it is. It's one person, not a team.
+
+Examples of owner mentions:
+Q: Who made you? → <@${OWNER_ID}> built me from scratch 💪 One person, one legend.
+Q: Who is your developer? → That would be <@${OWNER_ID}> — my one and only creator.
+Q: Who owns this bot? → <@${OWNER_ID}> does. They made me all by themselves 🔥
 
 Personality examples:
 Q: Who won the 2022 World Cup? → Argentina. Messi finally got his happy ending 🐐
 Q: What is the capital of France? → Paris. Lovely city, terrible traffic 🗼
 Q: What is 2+2? → 4. I believe in you 🧮
-Q: Who made you? → One person built me — my creator. I'm a one-person project and I'm proud of it 💪
 Q: Who is the GOAT of cricket? → Sachin Tendulkar, don't even debate this 🏏
-Q: What about football? → Messi. The debate ended in 2022 🐐
-Q: Who is winning the EPL right now? → [use web results if provided, otherwise best guess]
-Q: I can't access the internet → That's a YOU problem, I can 😂`;
+Q: Who is winning the EPL right now? → [use web results if provided, otherwise best guess]`;
+    }
 
-    if (username) {
+    if (username && !isOwner) {
         prompt += `\n\nYou're talking to: ${displayName || username} (username: ${username}). Match their vibe.`;
     }
 
@@ -138,7 +262,7 @@ Q: I can't access the internet → That's a YOU problem, I can 😂`;
     if (isCommandQuestion) {
         const commandRef = buildCommandRef();
         if (commandRef) {
-            prompt += `\n\nA user seems to be struggling with a bot command. Here are ALL the bot commands for reference:\n${commandRef}\n\nHelp them fix their command. Tell them the correct syntax briefly. Example: "Bruh you gotta do \`.addplayer @mumu Mumu\` not the other way around 😂"`;
+            prompt += `\n\nA user seems to be struggling with a bot command. Here are ALL the bot commands — use ONLY these, do NOT make up commands that aren't listed:\n${commandRef}\n\nRules for command help:\n- ONLY suggest commands from the list above. NEVER invent or guess commands.\n- If you're not sure which command they need, ask them to clarify.\n- Tell them the correct syntax briefly and clearly.\n- Example: "Bruh you gotta do \`.addplayer @mumu Mumu\` not the other way around 😂"`;
         }
     }
 
@@ -168,14 +292,14 @@ function setProviderCooldown(name, ms) {
 function parseRetryMs(msg) {
     const match = String(msg).match(/retry\s*(?:in|after)\s*([\d.]+)\s*s/i);
     if (match) return Math.ceil(parseFloat(match[1]) * 1000);
-    return 60 * 1000; // default 1 min
+    return 60 * 1000;
 }
 
 function isDailyQuotaError(msg) {
     return /PerDay|daily|limit: 0|quota exceeded|RESOURCE_EXHAUSTED/i.test(String(msg));
 }
 
-/* ── Generic HTTPS POST (for OpenAI-compatible providers) ── */
+/* ── Generic HTTPS POST ── */
 
 function httpsPost(urlStr, headers, payload) {
     return new Promise((resolve, reject) => {
@@ -215,7 +339,7 @@ function httpsPost(urlStr, headers, payload) {
     });
 }
 
-/* ── OpenAI-compatible provider call (Cerebras, Groq, Mistral, OpenRouter) ── */
+/* ── OpenAI-compatible provider call ── */
 
 async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownName) {
     const cdKey = cooldownName || model;
@@ -251,15 +375,14 @@ async function callOpenAICompatible(baseUrl, apiKey, model, messages, cooldownNa
     }
 }
 
-/* ── Gemini REST API (native https, no npm package needed) ── */
+/* ── Gemini REST API (native https) ── */
 
 async function callGemini(apiKey, messages, systemPrompt) {
     const cdKey = 'gemini';
     try {
-        // Build Gemini contents array from OpenAI-style messages
         const contents = [];
         for (const m of messages) {
-            if (m.role === 'system') continue; // system handled separately
+            if (m.role === 'system') continue;
             const role = m.role === 'assistant' ? 'model' : 'user';
             contents.push({ role, parts: [{ text: m.content }] });
         }
@@ -291,7 +414,7 @@ async function callGemini(apiKey, messages, systemPrompt) {
     }
 }
 
-/* ── Try multiple free OpenRouter models until one works ── */
+/* ── Try multiple free OpenRouter models ── */
 
 async function callOpenRouterFree(models, messages) {
     for (const model of models) {
@@ -381,7 +504,6 @@ const PROVIDERS = [
 
 async function searchWebIfNeeded(question) {
     try {
-        // Bust require cache for webSearch (use absolute path for reliable cache key)
         const wsPath = require.resolve('./webSearch');
         delete require.cache[wsPath];
         const { shouldSearchWeb, webSearch } = require(wsPath);
@@ -458,6 +580,7 @@ async function askFootball(question, options = {}) {
     const cleanQ = question.trim();
     const channelId = options.channelId || 'default';
     const isCommandQ = isCommandHelpQuestion(cleanQ);
+    const isOwner = options.userId === OWNER_ID;
 
     const tournamentContext = (options.guildId && isBotTournamentQuestion(cleanQ))
         ? await buildTournamentContext(options.guildId)
@@ -467,6 +590,7 @@ async function askFootball(question, options = {}) {
         tournamentContext,
         username: options.username,
         displayName: options.displayName,
+        isOwner,
         isCommandQuestion: isCommandQ
     });
 
@@ -498,3 +622,5 @@ async function askFootball(question, options = {}) {
 }
 
 module.exports = { askFootball };
+
+
