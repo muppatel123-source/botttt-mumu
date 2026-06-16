@@ -561,9 +561,19 @@ client.on('messageCreate', async (message) => {
             await message.react('<:hello:1488633282462744767>').catch(() => null);
         } else if (strippedContent && aiEnabled) {
             try {
+                // If this mention is a reply, include the referenced message for context
+                let contextMessage = '';
+                if (message.reference) {
+                    const refMsg = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+                    if (refMsg) {
+                        const refAuthor = refMsg.member?.displayName || refMsg.author.username;
+                        contextMessage = `[${refAuthor} said: "${refMsg.content}"]\n\n`;
+                    }
+                }
+
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(strippedContent, {
+                const answer = await askFootball(contextMessage + strippedContent, {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
                     userId: message.author.id,
@@ -584,9 +594,12 @@ client.on('messageCreate', async (message) => {
         try {
             const referencedMsg = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
             if (referencedMsg && referencedMsg.author.id === client.user.id) {
+                // Include what the bot said as context
+                let contextMessage = `[I (MUMU) previously said: "${referencedMsg.content}"]\n\n`;
+
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(message.content, {
+                const answer = await askFootball(contextMessage + message.content, {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
                     userId: message.author.id,
@@ -616,30 +629,6 @@ client.on('messageCreate', async (message) => {
                     .then(m => setTimeout(() => m.delete().catch(() => null), 4000));
             }
         }
-    }
-
-    /* ── AI: # prefix ── */
-    if (aiEnabled && message.content.startsWith('#') && message.content.length > 1) {
-        const question = message.content.slice(1).trim();
-        if (question) {
-            try {
-                const { askFootball } = require('./utils/footballAI');
-                message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(question, {
-                    guildId: message.guild.id,
-                    channelId: message.channel.id,
-                    userId: message.author.id,
-                    username: message.author.username,
-                    displayName: message.member?.displayName
-                });
-                if (answer) {
-                    await message.reply(answer);
-                }
-            } catch (error) {
-                console.error('[footballAI] error:', error);
-            }
-        }
-        return;
     }
 
     /* ── AI-only channel: block commands (owner bypasses) ── */
