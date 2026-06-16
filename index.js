@@ -552,14 +552,56 @@ client.on('messageCreate', async (message) => {
         });
     }
 
+    /* ── Helper: extract first image attachment for AI vision ── */
+    function getFirstImage(msg) {
+        if (!msg?.attachments?.size) return null;
+        for (const [, att] of msg.attachments) {
+            if (att.contentType?.startsWith('image/')) {
+                return { url: att.url, name: att.name || 'image' };
+            }
+        }
+        return null;
+    }
+
+    /* ── Helper: download image and convert to base64 ── */
+    async function imageToBase64(url) {
+        try {
+            const https = require('https');
+            return await new Promise((resolve) => {
+                const req = https.get(url, (res) => {
+                    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                        return imageToBase64(res.headers.location).then(resolve);
+                    }
+                    if (res.statusCode !== 200) { resolve(null); return; }
+                    const chunks = [];
+                    let size = 0;
+                    res.on('data', (chunk) => {
+                        size += chunk.length;
+                        if (size > 8 * 1024 * 1024) { req.destroy(); resolve(null); return; }
+                        chunks.push(chunk);
+                    });
+                    res.on('end', () => {
+                        try {
+                            const ct = res.headers['content-type'] || 'image/jpeg';
+                            if (!ct.startsWith('image/')) { resolve(null); return; }
+                            resolve({ mimeType: ct, base64: Buffer.concat(chunks).toString('base64') });
+                        } catch { resolve(null); }
+                    });
+                });
+                req.on('error', () => resolve(null));
+                req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+            });
+        } catch { return null; }
+    }
+
     /* ── Bot mention: react only on pure @mention (no other text), AI reply on mention with text ── */
     if (message.mentions.has(client.user) && !message.mentions.everyone) {
         const botMentionRegex = new RegExp(`<@!?${client.user.id}>`);
         const strippedContent = message.content.replace(botMentionRegex, '').trim();
 
-        if (!strippedContent && !message.reference) {
+        if (!strippedContent && !message.reference && message.attachments.size === 0) {
             await message.react('<:hello:1488633282462744767>').catch(() => null);
-        } else if (strippedContent && aiEnabled) {
+        } else if (aiEnabled && (strippedContent || message.attachments.size > 0)) {
             try {
                 // If this mention is a reply, include the referenced message for context
                 let contextMessage = '';
@@ -571,14 +613,22 @@ client.on('messageCreate', async (message) => {
                     }
                 }
 
+                // Check for image attachment
+                const img = getFirstImage(message);
+                let imageData = null;
+                if (img) {
+                    imageData = await imageToBase64(img.url);
+                }
+
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(contextMessage + strippedContent, {
+                const answer = await askFootball(contextMessage + (strippedContent || 'What do you see in this image?'), {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
                     userId: message.author.id,
                     username: message.author.username,
-                    displayName: message.member?.displayName
+                    displayName: message.member?.displayName,
+                    imageData
                 });
                 if (answer) {
                     await message.reply(answer);
@@ -597,14 +647,22 @@ client.on('messageCreate', async (message) => {
                 // Include what the bot said as context
                 let contextMessage = `[I (MUMU) previously said: "${referencedMsg.content}"]\n\n`;
 
+                // Check for image attachment
+                const img = getFirstImage(message);
+                let imageData = null;
+                if (img) {
+                    imageData = await imageToBase64(img.url);
+                }
+
                 const { askFootball } = require('./utils/footballAI');
                 message.channel.sendTyping().catch(() => null);
-                const answer = await askFootball(contextMessage + message.content, {
+                const answer = await askFootball(contextMessage + (message.content || 'What do you see in this image?'), {
                     guildId: message.guild.id,
                     channelId: message.channel.id,
                     userId: message.author.id,
                     username: message.author.username,
-                    displayName: message.member?.displayName
+                    displayName: message.member?.displayName,
+                    imageData
                 });
                 if (answer) {
                     await message.reply(answer);
