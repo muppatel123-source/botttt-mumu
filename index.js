@@ -1,7 +1,12 @@
 require('dotenv').config();
+console.log('🚀 Starting MUMU Bot...');
 
 const { Events, REST, Routes } = require('discord.js');
+console.log('✅ discord.js loaded');
+
 const mongoose = require('mongoose');
+console.log('✅ mongoose loaded');
+
 const {
     Client,
     GatewayIntentBits,
@@ -9,10 +14,21 @@ const {
     EmbedBuilder,
     PermissionFlagsBits
 } = require('discord.js');
-const Enmap = require('enmap').default || require('enmap');
+
+let Enmap;
+try {
+    Enmap = require('enmap').default || require('enmap');
+    console.log('✅ enmap loaded');
+} catch (e) {
+    console.error('⚠️ enmap not available, using in-memory fallback');
+    // Simple in-memory Map fallback if Enmap fails
+    Enmap = class extends Map { constructor() { super(); } };
+}
+
 const fs = require('fs');
 const path = require('path');
 const { getGuildPrefix, DEFAULT_PREFIX } = require('./utils/prefixManager');
+console.log('✅ utils loaded');
 
 process.setMaxListeners(20);
 
@@ -65,9 +81,16 @@ client.db = {
 3. CONNECT TO MONGODB
 ========================================
 */
-mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ Tournament DB Connected'))
-    .catch(err => console.error('❌ DB Error:', err));
+if (process.env.MONGODB_URI) {
+    mongoose.connect(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 10000,
+        connectTimeoutMS: 10000
+    })
+        .then(() => console.log('✅ Tournament DB Connected'))
+        .catch(err => console.error('❌ DB Error:', err.message));
+} else {
+    console.warn('⚠️ MONGODB_URI not set — database features will not work');
+}
 
 /*
 ========================================
@@ -100,6 +123,7 @@ const port = process.env.PORT || 7860;
 server.listen(port, '0.0.0.0', () => {
     console.log(`🌐 Server running on ${port}`);
 });
+console.log('✅ Express + Socket.IO ready');
 
 /*
 ========================================
@@ -117,40 +141,27 @@ const SUPER_OWNER_IDS = new Set([
 client.commands = new Collection();
 client.cooldowns = new Collection();
 
-client.warnings = new Enmap({
-    name: 'warnings',
-    dataDir: './data'
-});
-
-client.liveSettings = new Enmap({
-    name: 'liveSettings',
-    dataDir: './data'
-});
-
-client.afk = new Enmap({
-    name: 'afk',
-    dataDir: './data'
-});
-
-client.greetings = new Enmap({
-    name: 'greetings',
-    dataDir: './data'
-});
-
-client.gallery = new Enmap({
-    name: 'gallery',
-    dataDir: './data'
-});
-
-client.liveStandings = new Enmap({
-    name: 'liveStandings',
-    dataDir: './data'
-});
-
-client.matchCache = new Enmap({
-    name: 'matchCache',
-    dataDir: './data'
-});
+console.log('🔄 Initializing Enmap databases...');
+try {
+    client.warnings = new Enmap({ name: 'warnings', dataDir: './data' });
+    client.liveSettings = new Enmap({ name: 'liveSettings', dataDir: './data' });
+    client.afk = new Enmap({ name: 'afk', dataDir: './data' });
+    client.greetings = new Enmap({ name: 'greetings', dataDir: './data' });
+    client.gallery = new Enmap({ name: 'gallery', dataDir: './data' });
+    client.liveStandings = new Enmap({ name: 'liveStandings', dataDir: './data' });
+    client.matchCache = new Enmap({ name: 'matchCache', dataDir: './data' });
+    console.log('✅ Enmap databases initialized');
+} catch (enmapError) {
+    console.error('⚠️ Enmap init failed, using in-memory fallback:', enmapError.message);
+    const FallbackMap = class extends Map { constructor() { super(); } };
+    client.warnings = new FallbackMap();
+    client.liveSettings = new FallbackMap();
+    client.afk = new FallbackMap();
+    client.greetings = new FallbackMap();
+    client.gallery = new FallbackMap();
+    client.liveStandings = new FallbackMap();
+    client.matchCache = new FallbackMap();
+}
 
 const defaultPrefix = DEFAULT_PREFIX;
 
@@ -523,6 +534,48 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     }
 });
 
+/* ── Helper: extract first image attachment for AI vision ── */
+function getFirstImage(msg) {
+    if (!msg?.attachments?.size) return null;
+    for (const [, att] of msg.attachments) {
+        if (att.contentType?.startsWith('image/')) {
+            return { url: att.url, name: att.name || 'image' };
+        }
+    }
+    return null;
+}
+
+/* ── Helper: download image and convert to base64 ── */
+async function imageToBase64(url) {
+    try {
+        const httpsMod = require('https');
+        return await new Promise((resolve) => {
+            const req = httpsMod.get(url, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    return imageToBase64(res.headers.location).then(resolve);
+                }
+                if (res.statusCode !== 200) { resolve(null); return; }
+                const chunks = [];
+                let size = 0;
+                res.on('data', (chunk) => {
+                    size += chunk.length;
+                    if (size > 8 * 1024 * 1024) { req.destroy(); resolve(null); return; }
+                    chunks.push(chunk);
+                });
+                res.on('end', () => {
+                    try {
+                        const ct = res.headers['content-type'] || 'image/jpeg';
+                        if (!ct.startsWith('image/')) { resolve(null); return; }
+                        resolve({ mimeType: ct, base64: Buffer.concat(chunks).toString('base64') });
+                    } catch { resolve(null); }
+                });
+            });
+            req.on('error', () => resolve(null));
+            req.setTimeout(10000, () => { req.destroy(); resolve(null); });
+        });
+    } catch { return null; }
+}
+
 /*
 ========================================
 12. MESSAGE EVENT
@@ -574,47 +627,6 @@ client.on('messageCreate', async (message) => {
         });
     }
 
-    /* ── Helper: extract first image attachment for AI vision ── */
-    function getFirstImage(msg) {
-        if (!msg?.attachments?.size) return null;
-        for (const [, att] of msg.attachments) {
-            if (att.contentType?.startsWith('image/')) {
-                return { url: att.url, name: att.name || 'image' };
-            }
-        }
-        return null;
-    }
-
-    /* ── Helper: download image and convert to base64 ── */
-    async function imageToBase64(url) {
-        try {
-            const https = require('https');
-            return await new Promise((resolve) => {
-                const req = https.get(url, (res) => {
-                    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                        return imageToBase64(res.headers.location).then(resolve);
-                    }
-                    if (res.statusCode !== 200) { resolve(null); return; }
-                    const chunks = [];
-                    let size = 0;
-                    res.on('data', (chunk) => {
-                        size += chunk.length;
-                        if (size > 8 * 1024 * 1024) { req.destroy(); resolve(null); return; }
-                        chunks.push(chunk);
-                    });
-                    res.on('end', () => {
-                        try {
-                            const ct = res.headers['content-type'] || 'image/jpeg';
-                            if (!ct.startsWith('image/')) { resolve(null); return; }
-                            resolve({ mimeType: ct, base64: Buffer.concat(chunks).toString('base64') });
-                        } catch { resolve(null); }
-                    });
-                });
-                req.on('error', () => resolve(null));
-                req.setTimeout(10000, () => { req.destroy(); resolve(null); });
-            });
-        } catch { return null; }
-    }
 
     /* ── Bot mention: react only on pure @mention (no other text), AI reply on mention with text ── */
     if (message.mentions.has(client.user) && !message.mentions.everyone) {
@@ -783,6 +795,11 @@ client.on('messageCreate', async (message) => {
 13. LOGIN
 ========================================
 */
+console.log('🔄 Attempting Discord login...');
+console.log('DISCORD_TOKEN set:', !!process.env.DISCORD_TOKEN);
+console.log('MONGODB_URI set:', !!process.env.MONGODB_URI);
+console.log('CLIENT_ID set:', !!process.env.CLIENT_ID);
+
 if (!process.env.DISCORD_TOKEN) {
     console.error('❌ DISCORD_TOKEN is missing in runtime environment');
 } else {
@@ -791,6 +808,6 @@ if (!process.env.DISCORD_TOKEN) {
             console.log('🔐 Login request sent to Discord');
         })
         .catch((err) => {
-            console.error('❌ Discord login failed:', err);
+            console.error('❌ Discord login failed:', err.message || err);
         });
 }
