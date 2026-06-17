@@ -358,7 +358,7 @@ async function runCommand(command, input, args, isSlash) {
             .setFooter({ text: '🤷‍♂️' });
 
         if (isSlash) return input.reply({ embeds: [blockEmbed], ephemeral: true });
-        return input.reply({ embeds: [blockEmbed] }).then(m => setTimeout(() => m.delete().catch(() => null), 10000));
+        return input.reply({ embeds: [blockEmbed] });
     }
 
     if (!client.cooldowns.has(command.name)) {
@@ -529,6 +529,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 ========================================
 */
 client.on('messageCreate', async (message) => {
+    try {
     if (message.author.bot || !message.guild) return;
 
     const isOwner = SUPER_OWNER_IDS.has(message.author.id);
@@ -771,6 +772,9 @@ client.on('messageCreate', async (message) => {
         } catch (error) {
             console.error('[footballAI] command help error:', error);
         }
+    }
+    } catch (error) {
+        console.error("[messageCreate] UNHANDLED ERROR:", error);
     }
 });
 
