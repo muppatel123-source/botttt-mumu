@@ -58,6 +58,7 @@ module.exports = {
             football: '<a:footballg:1486727534576930846>',
             cricket: '🏏',
             tournament: '<a:Tournament:1488533188547711079>',
+            games: '🎮',
             config: '<a:config:1488536717660262661>',
             levelling: '<:LEVELUP:1488537174029635665>'
         };
