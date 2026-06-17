@@ -359,13 +359,13 @@ async function runCommand(command, input, args, isSlash) {
         return input.reply({ embeds: [banEmbed] }).then(m => setTimeout(() => m.delete().catch(() => null), 6000));
     }
 
-    /* ── Server-specific command block ── */
-    const MUTINY_SERVER = '1417923875425222700';
-    if (guildId === MUTINY_SERVER && !isOwner) {
+    /* ── Server-specific command block (individual users only) ── */
+    const MUTINY_USERS = new Set(['1086966278775906344', '1377354487509024839']);
+    if (MUTINY_USERS.has(userId) && !isOwner) {
         const blockEmbed = new EmbedBuilder()
             .setColor('#FF4444')
-            .setTitle('🚫 Not Managing This Server')
-            .setDescription('I am **not** managing the tournaments in this server anymore.\n\nWant to know why? Ask me — `@MUMU why aren\'t you managing this server?`')
+            .setTitle('🚫 Nope.')
+            .setDescription('You said you could manage better than my creator. So manage. You don\'t need me.')
             .setFooter({ text: '🤷‍♂️' });
 
         if (isSlash) return input.reply({ embeds: [blockEmbed], ephemeral: true });
