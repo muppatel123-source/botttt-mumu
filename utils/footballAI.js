@@ -767,4 +767,249 @@ ${webContext}`;
     return null;
 }
 
-module.exports = { askFootball };
+/* ── Generic AI call (no personality, for structured outputs) ── */
+
+async function askRaw(systemPrompt, userPrompt) {
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+    ];
+
+    for (const provider of PROVIDERS) {
+        if (!provider.active() || provider.cooldown()) continue;
+        try {
+            const answer = await provider.call(messages, systemPrompt, systemPrompt);
+            if (answer) return answer;
+        } catch { /* next */ }
+    }
+    return null;
+}
+
+/* ── Quiz: generate a question ── */
+
+async function generateQuizQuestion(difficulty) {
+    const diffLabel = difficulty === 'mixed' ? 'a random mix of easy, moderate, and difficult' : difficulty;
+
+    const systemPrompt = 'You are a football quiz question generator. Return ONLY valid JSON. No markdown, no code blocks, no extra text whatsoever.';
+
+    const userPrompt = `Generate a single football (soccer) quiz question.
+
+Difficulty: ${diffLabel}
+
+Return ONLY this JSON format, nothing else:
+{"question": "the question text here", "answer": "short answer here"}
+
+Rules:
+- The question must be about real football/soccer
+- The answer must be SHORT — a player name, club name, country, number, or year
+- Do NOT include the answer in the question
+- Make it interesting and fun
+${difficulty === 'easy' ? '- Easy: well-known facts any casual fan would know' : ''}
+${difficulty === 'moderate' ? '- Moderate: decent football knowledge needed' : ''}
+${difficulty === 'difficult' ? '- Difficult: only hardcore football fans would know this' : ''}
+${difficulty === 'mixed' ? '- Any difficulty from easy to very hard' : ''}
+
+Return ONLY the JSON object.`;
+
+    const result = await askRaw(systemPrompt, userPrompt);
+    if (!result) return null;
+
+    try {
+        // Strip markdown code blocks if present
+        let cleaned = result.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.question && parsed.answer) {
+                return {
+                    question: parsed.question.trim(),
+                    answer: parsed.answer.trim(),
+                    category: parsed.category || 'general'
+                };
+            }
+        }
+    } catch { /* parse failed */ }
+
+    // Retry once with simpler prompt
+    const retry = await askRaw(
+        'Return ONLY JSON. No extra text.',
+        `Football quiz question (${diffLabel}). JSON only: {"question": "...", "answer": "..."}`
+    );
+
+    if (retry) {
+        try {
+            let cleaned = retry.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (parsed.question && parsed.answer) {
+                    return {
+                        question: parsed.question.trim(),
+                        answer: parsed.answer.trim(),
+                        category: 'general'
+                    };
+                }
+            }
+        } catch { /* parse failed */ }
+    }
+
+    return null;
+}
+
+/* ── Quiz: fuzzy answer matching ── */
+
+function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            dp[i][j] = a[i - 1] === b[j - 1]
+                ? dp[i - 1][j - 1]
+                : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        }
+    }
+    return dp[m][n];
+}
+
+function normalizeAnswer(s) {
+    return s
+        .toLowerCase()
+        .trim()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // remove accents
+        .replace(/^(the|fc|cf|sc|afc|bfc)\s+/i, '') // remove leading articles/clubs
+        .replace(/\s+(fc|cf|sc|afc|bfc)$/i, '')     // remove trailing club suffixes
+        .replace(/[-.']/g, ' ')                       // hyphens/dots/apostrophes → space
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function fuzzyMatch(correct, userAnswer) {
+    const c = normalizeAnswer(correct);
+    const u = normalizeAnswer(userAnswer);
+
+    // Exact match
+    if (c === u) return true;
+
+    // One contains the other
+    if (c.includes(u) || u.includes(c)) return true;
+
+    // Last name / single name match (Ronaldo → Cristiano Ronaldo)
+    const cWords = c.split(' ');
+    const uWords = u.split(' ');
+
+    if (cWords.length > 1 && uWords.length === 1) {
+        if (cWords[cWords.length - 1] === u) return true;  // last name
+        if (cWords[0] === u) return true;                    // first name
+    }
+    if (uWords.length > 1 && cWords.length === 1) {
+        if (uWords[uWords.length - 1] === c) return true;
+        if (uWords[0] === c) return true;
+    }
+
+    // Common football abbreviations and nicknames
+    const abbrevMap = {
+        'man united': 'manchester united',
+        'man utd': 'manchester united',
+        'man city': 'manchester city',
+        'spurs': 'tottenham hotspur',
+        'tottenham': 'tottenham hotspur',
+        'barca': 'barcelona',
+        'psg': 'paris saint germain',
+        'paris sg': 'paris saint germain',
+        'bayern': 'bayern munich',
+        'bvb': 'borussia dortmund',
+        'dortmund': 'borussia dortmund',
+        'atletico': 'atletico madrid',
+        'ac milan': 'milan',
+        'inter': 'inter milan',
+        'inter milan': 'internazionale',
+        'juve': 'juventus',
+        'porto': 'fc porto',
+        'benfica': 'sl benfica',
+        'sporting': 'sporting cp',
+        'ajax': 'afc ajax',
+        'celtic': 'celtic fc',
+        'rangers': 'rangers fc',
+        'sevilla': 'sevilla fc',
+        'villa': 'aston villa',
+        'wolves': 'wolverhampton',
+        'leeds': 'leeds united',
+        'forest': 'nottingham forest',
+        'newcastle': 'newcastle united',
+        'cr7': 'cristiano ronaldo',
+        'leo messi': 'lionel messi',
+        'lm10': 'lionel messi',
+        'neymar': 'neymar jr',
+        'ney': 'neymar jr',
+        'mbappe': 'kylian mbappe',
+        'haaland': 'erling haaland',
+        'vini': 'vinicius junior',
+        'kdb': 'kevin de bruyne',
+        'salah': 'mohamed salah',
+        'mo salah': 'mohamed salah',
+        'wembley': 'wembley stadium',
+        'old trafford': 'old trafford',
+        'camp nou': 'camp nou',
+        'bernabeu': 'santiago bernabeu',
+        'santiago bernabeu': 'santiago bernabeu',
+        'anfield': 'anfield',
+        'san siro': 'san siro',
+        'cl': 'champions league',
+        'ucl': 'champions league',
+        'epl': 'premier league',
+        'laliga': 'la liga',
+        'seriea': 'serie a',
+    };
+
+    const uExpanded = abbrevMap[u] || u;
+    const cExpanded = abbrevMap[c] || c;
+    if (uExpanded === cExpanded) return true;
+    if (uExpanded.includes(cExpanded) || cExpanded.includes(uExpanded)) return true;
+
+    // Number-word matching (5 = five, etc.)
+    const numWords = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+        'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen',
+        'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
+    const uNumIdx = numWords.indexOf(u);
+    const cNumIdx = numWords.indexOf(c);
+    if (uNumIdx !== -1 && c === String(uNumIdx)) return true;
+    if (cNumIdx !== -1 && u === String(cNumIdx)) return true;
+    // "5 times" → "5"
+    const uNum = parseInt(u);
+    const cNum = parseInt(c);
+    if (!isNaN(uNum) && !isNaN(cNum) && uNum === cNum) return true;
+
+    // Levenshtein distance for typos (short answers only)
+    if (c.length <= 25 && u.length <= 25 && Math.abs(c.length - u.length) <= 3) {
+        const dist = levenshtein(c, u);
+        if (dist <= 2 && dist <= Math.max(1, Math.floor(c.length * 0.25))) return true;
+    }
+
+    return false;
+}
+
+/* ── Quiz: check answer (local fuzzy + AI fallback) ── */
+
+async function checkQuizAnswer(correctAnswer, userAnswer) {
+    // Fast local check first
+    if (fuzzyMatch(correctAnswer, userAnswer)) return true;
+
+    // AI fallback for ambiguous cases (e.g., "CR7" for "Cristiano Ronaldo")
+    const result = await askRaw(
+        'You are a quiz answer judge. Return ONLY "true" or "false". Nothing else.',
+        `Correct answer: "${correctAnswer}"\nUser answered: "${userAnswer}"\n\nIs the user's answer correct? Accept nicknames, abbreviations, partial names, common alternate names. Be generous but don't accept wrong answers. Return ONLY "true" or "false".`
+    );
+
+    if (result) {
+        const cleaned = result.toLowerCase().trim();
+        if (cleaned.includes('true')) return true;
+        if (cleaned.includes('false')) return false;
+    }
+
+    return false;
+}
+
+module.exports = { askFootball, generateQuizQuestion, checkQuizAnswer };
