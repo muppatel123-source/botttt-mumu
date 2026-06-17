@@ -1,3 +1,10 @@
+/**
+ * prefixManager.js
+ *
+ * Per-guild prefix management.
+ * Falls back to DEFAULT_PREFIX on any error.
+ */
+
 const { ServerConfig } = require('../models/Tournament');
 
 const DEFAULT_PREFIX = '.';
@@ -5,18 +12,22 @@ const DEFAULT_PREFIX = '.';
 async function getGuildPrefix(guildId) {
     if (!guildId) return DEFAULT_PREFIX;
 
-    const config = await ServerConfig.collection.findOne(
-        { guildId },
-        {
-            projection: {
-                prefix: 1
+    try {
+        const config = await ServerConfig.collection.findOne(
+            { guildId },
+            {
+                projection: {
+                    prefix: 1
+                }
             }
-        }
-    ).catch(() => null);
+        ).catch(() => null);
 
-    const prefix = String(config?.prefix || '').trim();
+        const prefix = String(config?.prefix || '').trim();
 
-    return prefix || DEFAULT_PREFIX;
+        return prefix || DEFAULT_PREFIX;
+    } catch {
+        return DEFAULT_PREFIX;
+    }
 }
 
 async function setGuildPrefix(guildId, prefix) {
