@@ -70,18 +70,42 @@ async function endQuiz(game, channel) {
 
 /* ── Ask a single question ── */
 
+const LOADING_MESSAGES = [
+    '📚 Flipping through football history books...',
+    '⚽ Consulting the football gods...',
+    '🔍 Scanning 150 years of football records...',
+    '🏆 Digging into trophy cabinets...',
+    '🌍 Searching across every continent...',
+    '📖 Opening the encyclopedia of football...',
+    '🎯 Crafting the perfect question...',
+    '⚽ Looking for a banger of a question...',
+    '🧠 Picking the brain of a football madman...',
+    '🏟️ Checking the archives at Wembley...',
+    '📋 Asking the commentators for a good one...',
+    '🔥 Cooking up a fire question...',
+    '🧐 Investigating football\'s deepest secrets...',
+    '💎 Mining for football gems...',
+    '🎯 Loading the next challenge...',
+    '⚡ Charging up the football brain cells...',
+    '🎪 Preparing your next headache...',
+    '🪄 Summoning a question from the void...',
+    '🎬 Next question loading... grab your popcorn',
+    '🎓 Testing your football PhD...'
+];
+
 async function askNextQuestion(game, channel) {
     if (!game.active) return;
 
     game.questionNumber++;
 
-    // Generate question
-    const loadingMsg = await channel.send('🔄 Generating question...').catch(() => null);
+    // Fun loading message
+    const loadingText = LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
+    const loadingMsg = await channel.send(loadingText).catch(() => null);
 
     let question;
     let retries = 0;
     while (retries < 2) {
-        question = await generateQuizQuestion(game.difficulty);
+        question = await generateQuizQuestion(game.difficulty, game.askedQuestions);
         if (question) break;
         retries++;
     }
@@ -97,6 +121,7 @@ async function askNextQuestion(game, channel) {
 
     game.currentAnswer = question.answer;
     game.currentQuestion = question.question;
+    game.askedQuestions.push(question.question);
     game.answered = false;
 
     // Post the question
@@ -249,6 +274,7 @@ module.exports = {
                 difficulty,
                 participants,
                 scores: new Map(),
+                askedQuestions: [],
                 questionNumber: 0,
                 currentAnswer: null,
                 currentQuestion: null,
