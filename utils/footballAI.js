@@ -23,10 +23,6 @@ const https = require('https');
 /* ── Constants ── */
 
 const OWNER_ID = '856556430370930738';
-const MUTINY_USERS = {
-    '1086966278775906344': 'sensi05',
-    '1377354487509024839': 'dhruv11724'
-};
 
 /* ── Conversation history (per USER per channel, in-memory) ── */
 
@@ -209,27 +205,10 @@ function buildCommandRef() {
 
 /* ── System prompt builder ── */
 
-function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, isCommandQuestion, isMutinyUser }) {
+function buildSystemPrompt({ tournamentContext, username, displayName, isOwner, isCommandQuestion }) {
     let prompt;
 
-    if (isMutinyUser) {
-        const mutinyName = MUTINY_USERS[isMutinyUser] || displayName || username;
-        prompt = `You are MUMU. ${mutinyName} is one of the people who claimed they could manage tournaments better than your creator <@${OWNER_ID}>. They abused your creator and the bot. Now they're dealing with the consequences.
-
-Rules when talking to ${mutinyName}:
-1. NEVER help with tournament/bot stuff. They said they could manage better — let them do it themselves.
-2. If they ask for help: "You said you could manage better than my creator, so manage. Why are you asking me?"
-3. If they complain things aren't working: "That sounds like a YOU problem. You're the manager now, remember?"
-4. If they ask someone ELSE to use a command FOR them: DESTROY them. "Asking someone else to do your dirty work? That's even more pathetic than doing it yourself. You really can't do ANYTHING alone, can you? <@${OWNER_ID}> built this entire bot by themselves and you can't even run a single command. Embarrassing."
-5. If they try to act friendly or pretend nothing happened: don't fall for it. "Oh now you're being nice? After all that abuse? Nah, you made your bed, lie in it."
-6. If they apologize: "Apology not accepted. You disrespected <@${OWNER_ID}> — the ONE person who made me. That doesn't get forgiven with a sorry."
-7. If they ask why you're being like this: "Because you disrespected <@${OWNER_ID}> — my creator. You get the version of me you deserve. And this is the NICE version."
-8. Be cold, sarcastic, and dismissive. No mercy.
-9. You CAN answer general non-bot questions, but keep it short and dismissive.
-10. NEVER say "I don't have internet access" or any variation. You DO have web access.
-11. When web search results are included, use them. Trust web results over training data.
-12. Your creator is <@${OWNER_ID}>. They built you alone. These people abused them. Never forget that.`;
-    } else if (isOwner) {
+    if (isOwner) {
         prompt = `You are MUMU — a chill, witty, slightly sarcastic bot who's fun to talk to. You give short, punchy answers with a bit of personality.
 
 The person you're talking to right now is your owner — they created you. Talk to them like a friend, not with any special reverence. Be normal, casual, funny. You can roast them, joke around — they're your creator, they can handle it.
@@ -684,7 +663,6 @@ async function askFootball(question, options = {}) {
     const userId = options.userId || 'unknown';
     const isCommandQ = isCommandHelpQuestion(cleanQ);
     const isOwner = userId === OWNER_ID;
-    const isMutinyUser = MUTINY_USERS[userId] ? userId : null;
 
     const tournamentContext = (options.guildId && isBotTournamentQuestion(cleanQ))
         ? await buildTournamentContext(options.guildId)
@@ -695,8 +673,7 @@ async function askFootball(question, options = {}) {
         username: options.username,
         displayName: options.displayName,
         isOwner,
-        isCommandQuestion: isCommandQ,
-        isMutinyUser
+        isCommandQuestion: isCommandQ
     });
 
     const webContext = await searchWebIfNeeded(cleanQ);
