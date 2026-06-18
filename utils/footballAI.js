@@ -766,14 +766,48 @@ async function askRaw(systemPrompt, userPrompt) {
 
 /* ── Quiz: generate a question ── */
 
-async function generateQuizQuestion(difficulty) {
+async function generateQuizQuestion(difficulty, askedQuestions = []) {
     const diffLabel = difficulty === 'mixed' ? 'a random mix of easy, moderate, and difficult' : difficulty;
+
+    // Build a "do not repeat" block from previously asked questions
+    let noRepeat = '';
+    if (askedQuestions.length > 0) {
+        const recent = askedQuestions.slice(-15); // last 15 questions
+        noRepeat = `\n\nDO NOT repeat any of these questions (they were already asked):\n${recent.map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nYou MUST generate a COMPLETELY DIFFERENT question. Different topic, different player, different record, different era. Do NOT just rephrase the same question.`;
+    }
+
+    // Pick a random topic angle to force variety
+    const topicAngles = [
+        'World Cup history or records',
+        'Champions League / European Cup',
+        'Premier League era (1992-present)',
+        'La Liga or Serie A history',
+        'Bundesliga or Ligue 1',
+        'International football (Copa America, Euro, AFCON, Asian Cup)',
+        'Legendary players from the 2000s-2010s',
+        'Legendary players from the 1980s-1990s',
+        'Current active players (2024-2026)',
+        'Football transfers or record fees',
+        'Stadiums, venues, or host cities',
+        'Managers and coaches',
+        'Youth tournaments or Olympic football',
+        'Football rules, records, or trivia',
+        'African or South American club football',
+        'Derby matches or fierce rivalries',
+        'Comebacks, upsets, or shock results',
+        'Goal records or scoring achievements',
+        'Defensive records or goalkeeper achievements',
+        'Tactical innovations or famous formations'
+    ];
+    const randomAngle = topicAngles[Math.floor(Math.random() * topicAngles.length)];
 
     const systemPrompt = 'You are a football quiz question generator. Return ONLY valid JSON. No markdown, no code blocks, no extra text whatsoever.';
 
     const userPrompt = `Generate a single football (soccer) quiz question.
 
 Difficulty: ${diffLabel}
+Topic angle for this question: ${randomAngle}
+${noRepeat}
 
 Return ONLY this JSON format, nothing else:
 {"question": "the question text here", "answer": "short answer here"}
@@ -783,6 +817,7 @@ Rules:
 - The answer must be SHORT — a player name, club name, country, number, or year
 - Do NOT include the answer in the question
 - Make it interesting and fun
+- VARY your questions across different eras, leagues, and topics
 ${difficulty === 'easy' ? '- Easy: well-known facts any casual fan would know' : ''}
 ${difficulty === 'moderate' ? '- Moderate: decent football knowledge needed' : ''}
 ${difficulty === 'difficult' ? '- Difficult: only hardcore football fans would know this' : ''}
