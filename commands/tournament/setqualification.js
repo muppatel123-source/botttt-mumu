@@ -119,24 +119,49 @@ module.exports = {
 ==================================================== */
 
 async function runUpdateQualification({ guildId, tournamentKey, spots, reply }) {
-    const tournament = await TournamentSettings.findOneAndUpdate(
-        { guildId, tournamentKey },
-        { $set: { qualificationSpotsPerGroup: spots } },
-        { new: true }
-    );
+    const tournament = await TournamentSettings.findOne({ guildId, tournamentKey });
 
     if (!tournament) {
         return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
+
+    tournament.qualificationSpotsPerGroup = spots;
+
+    // Recalculate knockout rounds based on new qualification count
+    if (tournament.groupCount > 0) {
+        const qualifiedCount = tournament.groupCount * spots;
+        tournament.knockoutRounds = deriveKnockoutRounds(qualifiedCount);
+        tournament.hasKnockout = true;
+    }
+
+    await tournament.save();
+
+    const qualifiedCount = tournament.groupCount * spots;
+    const roundsStr = tournament.knockoutRounds.length
+        ? tournament.knockoutRounds.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' → ')
+        : 'None';
 
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
         .setTitle('✅ QUALIFICATION UPDATED')
         .setDescription(
             `Tournament: **${tournament.name}**\n\n` +
-            `Teams qualifying from each group: **${spots}**`
+            `Teams qualifying from each group: **${spots}**\n` +
+            `Total qualified: **${qualifiedCount}**\n` +
+            `Knockout rounds: **${roundsStr}**`
         )
         .setTimestamp();
 
     return reply({ embeds: [embed] });
+}
+
+/**
+ * Derive knockout rounds from qualified team count.
+ * 2 → ['final'], 4 → ['semifinal','final'], 8 → ['quarterfinal','semifinal','final'], etc.
+ */
+function deriveKnockoutRounds(qualifiedTeamCount) {
+    const ALL_ROUNDS = ['roundof16', 'quarterfinal', 'semifinal', 'final'];
+    const total = Math.max(2, qualifiedTeamCount);
+    const roundedCount = Math.ceil(Math.log2(total));
+    return ALL_ROUNDS.slice(ALL_ROUNDS.length - roundedCount);
 }

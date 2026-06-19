@@ -174,7 +174,7 @@ async function generateBracketEmbed(guildId, tournamentKey = null) {
     const fixtures = await Fixture.find({
         guildId,
         tournamentId: tournament._id,
-        phase: { $in: ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final'] }
+        phase: { $in: ['qualifier', 'eliminator', 'roundof16', 'quarterfinal', 'semifinal', 'final'] }
     }).sort({ phase: 1, matchNumber: 1, leg: 1 });
 
     const embed = new EmbedBuilder()
@@ -198,7 +198,7 @@ async function generateBracketEmbed(guildId, tournamentKey = null) {
 
     /* ── Group by phase ── */
     const grouped = groupFixturesByPhase(fixtures);
-    const phaseOrder = ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final'];
+    const phaseOrder = ['qualifier', 'eliminator', 'roundof16', 'quarterfinal', 'semifinal', 'final'];
 
     for (const phase of phaseOrder) {
         const phaseFixtures = grouped[phase] || [];

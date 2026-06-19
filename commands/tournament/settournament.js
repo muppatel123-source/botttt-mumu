@@ -280,7 +280,7 @@ function validateSettings(data) {
     const formats = ['league', 'groups_knockout', 'mega_table_playoffs', 'custom'];
     const modes = ['auto', 'manual_draw', 'hybrid'];
     const phases = ['registration', 'league', 'groups', 'knockout', 'completed'];
-    const rounds = ['qualifier', 'eliminator', 'quarterfinal', 'semifinal', 'final'];
+    const rounds = ['qualifier', 'eliminator', 'roundof16', 'quarterfinal', 'semifinal', 'final'];
 
     if (!data.format) return { ok: false, error: 'Missing `format`.' };
     if (!formats.includes(data.format)) return { ok: false, error: `Invalid format. Use: ${formats.join(', ')}` };

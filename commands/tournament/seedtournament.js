@@ -271,7 +271,7 @@ async function runSeed({ guild, config, reply }) {
 
         homeAway: false,
         hasKnockout: groups > 0,
-        knockoutRounds: groups > 0 ? ['semifinal', 'final'] : [],
+        knockoutRounds: groups > 0 ? deriveKnockoutRounds(groups * 2) : [],
         twoLeggedRounds: [],
         finalNeutralVenue: true,
 
@@ -729,4 +729,30 @@ function randomInt(min, max) {
 function randomItem(arr) {
     if (!Array.isArray(arr) || !arr.length) return null;
     return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/* ── Derive knockout rounds from qualified team count ── */
+
+/**
+ * Given the total number of qualified teams, return the
+ * ordered array of knockout round phase strings.
+ *
+ * 2  → ['final']
+ * 4  → ['semifinal', 'final']
+ * 8  → ['quarterfinal', 'semifinal', 'final']
+ * 16 → ['roundof16', 'quarterfinal', 'semifinal', 'final']
+ */
+function deriveKnockoutRounds(qualifiedTeamCount) {
+    const ALL_ROUNDS = ['roundof16', 'quarterfinal', 'semifinal', 'final'];
+    const total = Math.max(2, qualifiedTeamCount);
+
+    // How many rounds do we need?  log2(total)
+    // 2 → 1 round (final), 4 → 2, 8 → 3, 16 → 4
+    const roundCount = Math.log2(total);
+
+    // If not a power of 2, round up (tournament will need byes)
+    const roundedCount = Math.ceil(roundCount);
+
+    // Slice from the end of ALL_ROUNDS
+    return ALL_ROUNDS.slice(ALL_ROUNDS.length - roundedCount);
 }

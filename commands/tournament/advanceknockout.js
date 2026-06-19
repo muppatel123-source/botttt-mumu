@@ -49,6 +49,7 @@ module.exports = {
                 .addChoices(
                     { name: 'Qualifier', value: 'qualifier' },
                     { name: 'Eliminator', value: 'eliminator' },
+                    { name: 'Round of 16', value: 'roundof16' },
                     { name: 'Quarter Final', value: 'quarterfinal' },
                     { name: 'Semi Final', value: 'semifinal' }
                 )
@@ -59,6 +60,7 @@ module.exports = {
                 .setRequired(true)
                 .addChoices(
                     { name: 'Eliminator', value: 'eliminator' },
+                    { name: 'Round of 16', value: 'roundof16' },
                     { name: 'Quarter Final', value: 'quarterfinal' },
                     { name: 'Semi Final', value: 'semifinal' },
                     { name: 'Final', value: 'final' }
