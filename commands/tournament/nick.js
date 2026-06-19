@@ -1,16 +1,16 @@
 /**
  * nick.js
  *
- * Change a teammate's server nickname. Captain or VC can set any
- * teammate's nickname. Supports "reset" to clear the nickname.
+ * Change a teammate's nickname IN THE BOT (stored in the
+ * Player database). Does NOT touch their server nickname.
+ * Captain or VC can set any teammate's bot nickname.
+ * Supports "reset" to revert to their Discord username.
  *
  * Usage:  .nick @user <new nickname>
  *         .nick @user reset
  * Slash:  /teamnick user:<user> nickname:<name>
  *
  * Aliases: nickname, setnick, teamnick
- *
- * Bot requires: ManageNicknames permission
  */
 
 const {
@@ -19,12 +19,12 @@ const {
     EmbedBuilder
 } = require('discord.js');
 
-const { Team, Player } = require('../../models/Tournament');
+const { Team, Player, TournamentPlayer } = require('../../models/Tournament');
 const { getUserFromArgs } = require('../../utils/stringHelpers');
 
 module.exports = {
     name: 'nick',
-    description: 'Change a teammate\'s server nickname.',
+    description: 'Change a teammate\'s nickname in the bot.',
     usage: '.nick @user <new nickname>  |  .nick @user reset',
     aliases: ['nickname', 'setnick', 'teamnick'],
     hidden: false,
@@ -33,7 +33,7 @@ module.exports = {
 
     data: new SlashCommandBuilder()
         .setName('teamnick')
-        .setDescription('Change a teammate\'s server nickname')
+        .setDescription('Change a teammate\'s nickname in the bot')
         .addUserOption(opt =>
             opt.setName('user')
                 .setDescription('Teammate to rename')
@@ -41,7 +41,7 @@ module.exports = {
         )
         .addStringOption(opt =>
             opt.setName('nickname')
-                .setDescription('New nickname, or "reset" to clear')
+                .setDescription('New nickname, or "reset" to revert to Discord username')
                 .setRequired(true)
         ),
 
@@ -122,10 +122,13 @@ module.exports = {
 ==================================================== */
 
 /**
- * Change a teammate's server nickname:
+ * Change a teammate's nickname IN THE BOT DATABASE only.
+ * Does NOT touch the Discord server nickname.
+ *
  * 1. Verify actor is captain/VC of a team
  * 2. Verify target is on the same team
- * 3. Set or reset the nickname via Discord API
+ * 3. Update Player.name in the database
+ * 4. Update TournamentPlayer.playerNameSnapshot for active tournaments
  */
 async function runNick({ guild, actorId, targetUser, nickname, reply }) {
     /* ── Find actor's team ── */
@@ -184,40 +187,29 @@ async function runNick({ guild, actorId, targetUser, nickname, reply }) {
         nickname.toLowerCase() === 'clear' ||
         nickname.toLowerCase() === 'remove';
 
-    const newNickname = isReset ? null : nickname.slice(0, 32);
+    const newNickname = isReset ? (targetUser.username || targetUser.displayName) : nickname.slice(0, 32);
 
-    /* ── Set nickname via Discord API ── */
-    const member = await guild.members.fetch(targetUser.id).catch(() => null);
+    /* ── Update Player.name in database ── */
+    targetPlayer.name = newNickname;
+    await targetPlayer.save();
 
-    if (!member) {
-        return reply({ content: `❌ Could not find ${targetUser} in this server.` });
-    }
-
-    try {
-        await member.setNickname(newNickname);
-    } catch (err) {
-        if (err.code === 50013) {
-            return reply({
-                content:
-                    '❌ Missing permission. The bot needs **Manage Nicknames** permission ' +
-                    'to change nicknames. Ask a server admin to grant it.'
-            });
-        }
-
-        console.error('[nick] setNickname error:', err);
-        return reply({ content: `❌ Failed to set nickname: ${err.message || 'Unknown error'}` });
-    }
+    /* ── Update TournamentPlayer.playerNameSnapshot for active tournaments ── */
+    await TournamentPlayer.updateMany(
+        { playerId: targetPlayer._id },
+        { $set: { playerNameSnapshot: newNickname } }
+    );
 
     /* ── Response ── */
     if (isReset) {
         const embed = new EmbedBuilder()
             .setColor(0xE74C3C)
-            .setTitle('🏷️ NICKNAME REMOVED')
+            .setTitle('🏷️ NICKNAME RESET')
             .setDescription(
                 `Team: **${team.name}**\n` +
                 `Player: ${targetUser}\n` +
-                `Nickname has been reset to default.`
+                `Bot nickname reverted to their Discord username: **${newNickname}**`
             )
+            .setFooter({ text: 'Only the bot nickname was changed — server nickname is untouched.' })
             .setTimestamp();
 
         return reply({ embeds: [embed] });
@@ -229,8 +221,9 @@ async function runNick({ guild, actorId, targetUser, nickname, reply }) {
         .setDescription(
             `Team: **${team.name}**\n` +
             `Player: ${targetUser}\n` +
-            `New Nickname: **${newNickname}**`
+            `Bot Nickname: **${newNickname}**`
         )
+        .setFooter({ text: 'Only the bot nickname was changed — server nickname is untouched.' })
         .setTimestamp();
 
     return reply({ embeds: [embed] });
