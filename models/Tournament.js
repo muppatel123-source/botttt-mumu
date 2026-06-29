@@ -760,7 +760,9 @@ const serverConfigSchema = new mongoose.Schema(
     },
 
             trophy: {
-            default: { type: String, default: '🏆' }
+            default: { type: String, default: '<:_Trophy:1507987705311793152>' },
+            champion: { type: String, default: '<:_Trophy:1507987705311793152>' },
+            runner_up: { type: String, default: '🥈' }
     }
         }
     },
