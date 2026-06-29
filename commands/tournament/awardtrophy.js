@@ -33,7 +33,7 @@ const { escapeRegex } = require('../../utils/stringHelpers');
 
 /** Trophy types with display metadata */
 const TROPHY_TYPES = {
-    champion: { label: 'Winner', defaultEmoji: '<:_Trophy:1507987705311793152>' },
+    champion: { label: 'Winner', defaultEmoji: '<:midfield_league:1507806211918266368>' },
     runner_up: { label: 'Runner Up', defaultEmoji: '🥈' }
 };
 
