@@ -180,7 +180,12 @@ async function runAward({ guild, tournamentKey, discordID, awardType, reply }) {
             $setOnInsert: {
                 guildId: guild.id,
                 discordID,
-                displayName: player.name
+                allTimeStats: {
+                    played: 0, goals: 0, assists: 0, saves: 0,
+                    tackles: 0, interceptions: 0, yc: 0, rc: 0, mvps: 0
+                },
+                trophies: [],
+                awards: []
             },
             $set: { displayName: player.name },
             $push: {
