@@ -21,7 +21,7 @@ module.exports = {
     description: 'Create or update tournament settings.',
     usage: '.settournament <key> format=league mode=auto name=League_S1 teams=10',
     aliases: ['tsetup', 'tournamentsetup'],
-    hidden: false,
+    hidden: true,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -220,6 +220,7 @@ function buildUpdatePayload(guildId, tournamentKey, data) {
     if (typeof data.currentPhase !== 'undefined') payload.currentPhase = data.currentPhase;
     if (typeof data.captainRoleId !== 'undefined') payload.captainRoleId = data.captainRoleId;
     if (typeof data.tournamentPlayerRoleId !== 'undefined') payload.tournamentPlayerRoleId = data.tournamentPlayerRoleId;
+    if (typeof data.emoji !== 'undefined') payload.emoji = data.emoji;
 
     return payload;
 }
