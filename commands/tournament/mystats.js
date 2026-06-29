@@ -470,8 +470,12 @@ function getEmojiPack(config) {
             playmaker: config?.emojis?.awards?.playmaker || '🎯'
         },
         trophy: {
-            default: config?.emojis?.trophy?.default || config?.emojis?.trophies?.default || DEFAULT_TROPHY_EMOJI,
-            champion: config?.emojis?.trophy?.champion || config?.emojis?.trophies?.champion || config?.emojis?.trophy?.default || config?.emojis?.trophies?.default || DEFAULT_TROPHY_EMOJI,
+            default: (config?.emojis?.trophy?.default || config?.emojis?.trophies?.default) === '🏆'
+                ? DEFAULT_TROPHY_EMOJI
+                : (config?.emojis?.trophy?.default || config?.emojis?.trophies?.default || DEFAULT_TROPHY_EMOJI),
+            champion: (config?.emojis?.trophy?.champion || config?.emojis?.trophies?.champion) === '🏆'
+                ? DEFAULT_TROPHY_EMOJI
+                : (config?.emojis?.trophy?.champion || config?.emojis?.trophies?.champion || DEFAULT_TROPHY_EMOJI),
             runner_up: config?.emojis?.trophy?.runner_up || config?.emojis?.trophies?.runner_up || '🥈'
         }
     };
