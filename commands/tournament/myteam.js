@@ -22,11 +22,14 @@ const {
     Team,
     Player,
     TournamentTeam,
+    TournamentSettings,
     UserProfile
 } = require('../../models/Tournament');
 
 const { escapeRegex } = require('../../utils/stringHelpers');
 const { parseColor } = require('../../utils/displayHelpers');
+
+const DEFAULT_TROPHY_EMOJI = '<:_Trophy:1507987705311793152>';
 
 module.exports = {
     name: 'myteam',
@@ -177,8 +180,11 @@ async function resolveTeam({ guild, userId, requestedTeamName }) {
 ==================================================== */
 
 async function buildPayload({ guild, team, view }) {
+    // Load tournament emoji map for trophy display
+    const tournamentEmojiMap = await getTournamentEmojiMap(guild.id);
+
     const embed = view === 'trophies'
-        ? await buildTrophiesEmbed({ guild, team })
+        ? await buildTrophiesEmbed({ guild, team, tournamentEmojiMap })
         : await buildOverviewEmbed({ guild, team });
 
     return {
@@ -253,15 +259,15 @@ async function buildOverviewEmbed({ guild, team }) {
     return embed;
 }
 
-async function buildTrophiesEmbed({ guild, team }) {
-    const trophies = await collectTeamTrophies({ guildId: guild.id, team });
+async function buildTrophiesEmbed({ guild, team, tournamentEmojiMap }) {
+    const trophies = await collectTeamTrophies({ guildId: guild.id, team, tournamentEmojiMap });
 
     const embed = new EmbedBuilder()
         .setColor(0xF1C40F)
-        .setTitle(`🏆 ${team.name.toUpperCase()} TROPHIES`)
+        .setTitle(`${DEFAULT_TROPHY_EMOJI} ${team.name.toUpperCase()} TROPHIES`)
         .setDescription(
             trophies.length
-                ? trophies.map(formatTrophyLine).join('\n')
+                ? trophies.map(t => formatTrophyLine(t, tournamentEmojiMap)).join('\n')
                 : 'No trophies won yet.'
         )
         .setTimestamp();
@@ -276,15 +282,34 @@ async function buildTrophiesEmbed({ guild, team }) {
 }
 
 /* ====================================================
+   TOURNAMENT EMOJI MAP
+==================================================== */
+
+async function getTournamentEmojiMap(guildId) {
+    const tournaments = await TournamentSettings.find({ guildId })
+        .select('tournamentKey emoji')
+        .lean()
+        .catch(() => []);
+
+    const map = new Map();
+    for (const tournament of tournaments) {
+        if (tournament.tournamentKey && tournament.emoji) {
+            map.set(tournament.tournamentKey, tournament.emoji);
+        }
+    }
+    return map;
+}
+
+/* ====================================================
    TROPHY COLLECTION
 ==================================================== */
 
-async function collectTeamTrophies({ guildId, team }) {
+async function collectTeamTrophies({ guildId, team, tournamentEmojiMap }) {
     const trophyMap = new Map();
 
     const teamDoc = await Team.findById(team._id).lean().catch(() => null);
     for (const trophy of teamDoc?.trophies || []) {
-        addTrophyToMap(trophyMap, trophy);
+        addTrophyToMap(trophyMap, trophy, tournamentEmojiMap);
     }
 
     const tournamentTeamDocs = await TournamentTeam.find({
@@ -297,7 +322,7 @@ async function collectTeamTrophies({ guildId, team }) {
 
     for (const entry of tournamentTeamDocs) {
         for (const trophy of entry.trophies || []) {
-            addTrophyToMap(trophyMap, trophy);
+            addTrophyToMap(trophyMap, trophy, tournamentEmojiMap);
         }
     }
 
@@ -309,7 +334,7 @@ async function collectTeamTrophies({ guildId, team }) {
     for (const profile of profiles) {
         for (const trophy of profile.trophies || []) {
             if (trophy.teamName !== team.name) continue;
-            addTrophyToMap(trophyMap, trophy);
+            addTrophyToMap(trophyMap, trophy, tournamentEmojiMap);
         }
     }
 
@@ -317,15 +342,15 @@ async function collectTeamTrophies({ guildId, team }) {
         .sort((a, b) => new Date(b.awardedAt || 0) - new Date(a.awardedAt || 0));
 }
 
-function addTrophyToMap(map, trophy) {
-    const clean = normalizeTrophy(trophy);
+function addTrophyToMap(map, trophy, tournamentEmojiMap) {
+    const clean = normalizeTrophy(trophy, tournamentEmojiMap);
     if (!clean) return;
 
     const key = `${clean.tournamentKey}:${clean.label}`;
     if (!map.has(key)) map.set(key, clean);
 }
 
-function normalizeTrophy(trophy) {
+function normalizeTrophy(trophy, tournamentEmojiMap) {
     if (!trophy) return null;
 
     const tournamentName = trophy.tournamentName || trophy.tournamentKey || 'Tournament';
@@ -344,7 +369,30 @@ function normalizeTrophy(trophy) {
 
     if (!label) return null;
 
-    const emoji = trophy.emoji || (label === 'Winner' ? '🏆' : '🥈');
+    // Same priority logic as mystats.js
+    const tournamentEmoji = tournamentKey && tournamentEmojiMap?.get(tournamentKey)
+        ? tournamentEmojiMap.get(tournamentKey)
+        : null;
+
+    const savedEmoji = String(trophy.emoji || '').trim();
+    const genericWinnerEmojis = new Set(['🏆', '🏅', '🥇']);
+    const genericRunnerEmojis = new Set(['🥈', '🏅']);
+
+    let emoji;
+
+    if (label === 'Winner') {
+        emoji =
+            tournamentEmoji ||
+            (savedEmoji && !genericWinnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
+            DEFAULT_TROPHY_EMOJI;
+    } else if (label === 'Runner Up') {
+        emoji =
+            tournamentEmoji ||
+            (savedEmoji && !genericRunnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
+            '🥈';
+    } else {
+        emoji = tournamentEmoji || savedEmoji || DEFAULT_TROPHY_EMOJI;
+    }
 
     return {
         tournamentKey,
@@ -355,8 +403,9 @@ function normalizeTrophy(trophy) {
     };
 }
 
-function formatTrophyLine(trophy) {
-    return `${trophy.emoji} **${trophy.tournamentName} ${trophy.label}**`;
+function formatTrophyLine(trophy, tournamentEmojiMap) {
+    const emoji = trophy.emoji;
+    return `${emoji} **${trophy.tournamentName} ${trophy.label}**`;
 }
 
 /* ====================================================
