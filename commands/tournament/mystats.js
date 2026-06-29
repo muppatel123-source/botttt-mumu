@@ -554,15 +554,15 @@ function normalizeTrophy(trophy, emojis, tournamentEmojiMap) {
     if (label === 'Winner') {
         emoji =
             tournamentEmoji ||
+            (savedEmoji && !genericWinnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
             emojis?.trophy?.champion ||
             emojis?.trophy?.default ||
-            (savedEmoji && !genericWinnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
             DEFAULT_TROPHY_EMOJI;
     } else if (label === 'Runner Up') {
         emoji =
             tournamentEmoji ||
-            emojis?.trophy?.runner_up ||
             (savedEmoji && !genericRunnerEmojis.has(savedEmoji) ? savedEmoji : null) ||
+            emojis?.trophy?.runner_up ||
             '🥈';
     } else {
         emoji = tournamentEmoji || savedEmoji || emojis?.trophy?.default || DEFAULT_TROPHY_EMOJI;
