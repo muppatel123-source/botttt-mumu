@@ -28,6 +28,7 @@ try {
 const fs = require('fs');
 const path = require('path');
 const { getGuildPrefix, DEFAULT_PREFIX } = require('./utils/prefixManager');
+const { sanitizeMentions } = require('./utils/stringHelpers');
 console.log('✅ utils loaded');
 
 process.setMaxListeners(20);
@@ -275,6 +276,25 @@ async function registerSlashCommands() {
         );
 
         console.log('✅ Global slash commands registered.');
+
+        /* ── Guild-specific slash commands for instant availability ── */
+        // Global commands can take up to 1 hour to appear in some guilds.
+        // Guild commands appear INSTANTLY. Register for problematic guilds here.
+        const GUILD_SLASH_IDS = [
+            '1417923875425222700'  // Main server — needs instant commands
+        ];
+
+        for (const guildId of GUILD_SLASH_IDS) {
+            try {
+                await rest.put(
+                    Routes.applicationGuildCommands(process.env.CLIENT_ID, guildId),
+                    { body: slashCommands.map(c => c.json) }
+                );
+                console.log(`✅ Guild slash commands registered for ${guildId}`);
+            } catch (guildError) {
+                console.error(`❌ Guild slash registration failed for ${guildId}:`, guildError.message);
+            }
+        }
     } catch (error) {
         console.error('❌ Failed to register slash commands:', error);
 
@@ -570,6 +590,69 @@ async function imageToBase64(url) {
 */
 client.on('messageCreate', async (message) => {
     try {
+
+    /* ── Hand Football Bot DM handler ── */
+    // The hand football bot DMs players when it's their turn.
+    // MUMU receives these DMs and responds with a smart number.
+    if (!message.guild && message.author.bot) {
+        try {
+            const { parseHandFootballDM, decideNumber, getGame, activeGames, createGame } = require('./utils/handFootballAI');
+
+            // Combine text content + embed content for parsing
+            let dmContent = message.content || '';
+            if (message.embeds && message.embeds.length > 0) {
+                for (const embed of message.embeds) {
+                    if (embed.title) dmContent += ' ' + embed.title;
+                    if (embed.description) dmContent += ' ' + embed.description;
+                    if (embed.fields) {
+                        for (const field of embed.fields) {
+                            dmContent += ' ' + field.name + ' ' + field.value;
+                        }
+                    }
+                    if (embed.footer?.text) dmContent += ' ' + embed.footer.text;
+                }
+            }
+
+            const parsed = parseHandFootballDM(dmContent);
+
+            // Only respond if we detected a valid game action
+            if (parsed.action) {
+                console.log(`[handFootball] DM from ${message.author.username} (${message.author.id}): action=${parsed.action} range=${parsed.min}-${parsed.max}`);
+
+                // Find the active game for this DM context
+                let game = null;
+                for (const [, g] of activeGames) {
+                    if (g.active) { game = g; break; }
+                }
+                if (!game) {
+                    // Auto-create a game state for this encounter
+                    game = createGame('dm-' + message.author.id);
+                }
+
+                const pick = decideNumber(parsed, game);
+                console.log(`[handFootball] AI picks: ${pick} (action: ${parsed.action})`);
+
+                // Respond in the DM channel
+                await message.channel.send(String(pick));
+                return;
+            }
+        } catch (hfError) {
+            console.error('[handFootball] DM handler error:', hfError);
+        }
+    }
+
+    /* ── Hand Football: monitor channel messages from the HF bot ── */
+    // Track game state (goals, saves, fouls) from the hand football bot's public messages
+    if (message.author.bot && message.guild) {
+        try {
+            const { getGame, parseChannelMessage } = require('./utils/handFootballAI');
+            const game = getGame(message.channel.id);
+            if (game && message.author.id !== client.user.id) {
+                parseChannelMessage(message.content, game);
+            }
+        } catch { /* ignore */ }
+    }
+
     if (message.author.bot || !message.guild) return;
 
     const isOwner = SUPER_OWNER_IDS.has(message.author.id);
@@ -620,6 +703,33 @@ client.on('messageCreate', async (message) => {
         const botMentionRegex = new RegExp(`<@!?${client.user.id}>`);
         const strippedContent = message.content.replace(botMentionRegex, '').trim();
 
+        /* ── Hand Football join/leave trigger ── */
+        // When someone pings MUMU with "join" or "play hf" or "handfootball", send -j to join
+        // When someone pings MUMU with "leave" or "quit hf", send -l to leave
+        const hfJoinTriggers = /\b(join|play\s*hf|handfootball|hand\s*football|hf\s*join|hf\s*play)\b/i;
+        const hfLeaveTriggers = /\b(leave|quit\s*hf|hf\s*leave|hf\s*quit|stop\s*hf)\b/i;
+        if (hfJoinTriggers.test(strippedContent)) {
+            try {
+                const { createGame } = require('./utils/handFootballAI');
+                createGame(message.channel.id);
+                console.log(`[handFootball] Join triggered by ${message.author.username} in channel ${message.channel.id}`);
+                await message.channel.send('-j');
+                return;
+            } catch (e) {
+                console.error('[handFootball] Join error:', e);
+            }
+        } else if (hfLeaveTriggers.test(strippedContent)) {
+            try {
+                const { endGame } = require('./utils/handFootballAI');
+                endGame(message.channel.id);
+                console.log(`[handFootball] Leave triggered by ${message.author.username}`);
+                await message.channel.send('-l');
+                return;
+            } catch (e) {
+                console.error('[handFootball] Leave error:', e);
+            }
+        }
+
         if (!strippedContent && !message.reference && message.attachments.size === 0) {
             await message.react('<:hello:1488633282462744767>').catch(() => null);
         } else if (aiEnabled && (strippedContent || message.attachments.size > 0)) {
@@ -652,7 +762,7 @@ client.on('messageCreate', async (message) => {
                     imageData
                 });
                 if (answer) {
-                    await message.reply(answer);
+                    await message.reply(sanitizeMentions(answer));
                 }
             } catch (error) {
                 console.error('[footballAI] mention error:', error);
@@ -686,7 +796,7 @@ client.on('messageCreate', async (message) => {
                     imageData
                 });
                 if (answer) {
-                    await message.reply(answer);
+                    await message.reply(sanitizeMentions(answer));
                 }
             }
         } catch (error) {
@@ -727,7 +837,7 @@ client.on('messageCreate', async (message) => {
                             displayName: message.member?.displayName
                         });
                         if (answer) {
-                            return message.reply(answer);
+                            return message.reply(sanitizeMentions(answer));
                         }
                     } catch (error) {
                         console.error('[footballAI] ai-only channel error:', error);
@@ -766,7 +876,7 @@ client.on('messageCreate', async (message) => {
                 }
             );
             if (answer) {
-                await message.reply(answer);
+                await message.reply(sanitizeMentions(answer));
             }
         } catch (error) {
             console.error('[footballAI] command help error:', error);
