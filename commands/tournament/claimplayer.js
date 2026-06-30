@@ -21,7 +21,8 @@ const {
     Player,
     TournamentSettings,
     TournamentTeam,
-    TournamentPlayer
+    TournamentPlayer,
+    ServerConfig
 } = require('../../models/Tournament');
 
 const { getUserFromArgs } = require('../../utils/stringHelpers');
@@ -110,6 +111,12 @@ module.exports = {
  * Validates: actor is captain/VC, target is registered and teamless.
  */
 async function runClaimPlayer({ guild, actorId, targetUser, reply }) {
+    // ── Transfer lock check ──
+    const config = await ServerConfig.findOne({ guildId: guild.id }).lean();
+    if (config?.transfersLocked) {
+        return reply({ content: '🔒 Transfers are **locked**. The transfer window is currently closed.' });
+    }
+
     // ── Verify actor is captain/VC ──
     const captainPlayer = await Player.findOne({
         guildId: guild.id,
