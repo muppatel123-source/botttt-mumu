@@ -26,7 +26,8 @@ const {
     Team,
     TournamentSettings,
     TournamentTeam,
-    TournamentPlayer
+    TournamentPlayer,
+    ServerConfig
 } = require('../../models/Tournament');
 
 const { getUserFromArgs } = require('../../utils/stringHelpers');
@@ -119,6 +120,12 @@ module.exports = {
  * Validate the transfer request, build the approval UI, and start the collector.
  */
 async function runTransferRequest({ guild, channel, actorId, targetUser, reply }) {
+    // ── Transfer lock check ──
+    const config = await ServerConfig.findOne({ guildId: guild.id }).lean();
+    if (config?.transfersLocked) {
+        return reply({ content: '🔒 Transfers are **locked**. The transfer window is currently closed.' });
+    }
+
     // ── Self-transfer check ──
     if (actorId === targetUser.id) {
         return reply({ content: '❌ You cannot transfer yourself.' });
