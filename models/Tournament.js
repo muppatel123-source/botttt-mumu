@@ -740,6 +740,11 @@ const serverConfigSchema = new mongoose.Schema(
             default: true
         },
 
+        transfersLocked: {
+            type: Boolean,
+            default: false
+        },
+
         emojis: {
             stats: {
             played: { type: String, default: '<:Stadium:1487010283506630776>' },
