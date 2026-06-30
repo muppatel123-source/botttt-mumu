@@ -19,7 +19,8 @@ const {
 const {
     Player,
     TournamentPlayer,
-    TournamentSettings
+    TournamentSettings,
+    ServerConfig
 } = require('../../models/Tournament');
 
 const { getUserFromArgs } = require('../../utils/stringHelpers');
@@ -110,6 +111,12 @@ module.exports = {
  * 4. Update all active TournamentPlayer entries
  */
 async function runRelease({ guild, actorId, targetUser, reply }) {
+    // ── Transfer lock check ──
+    const config = await ServerConfig.findOne({ guildId: guild.id }).lean();
+    if (config?.transfersLocked) {
+        return reply({ content: '🔒 Transfers are **locked**. The transfer window is currently closed.' });
+    }
+
     /* ── Find actor's team ── */
     const captainPlayer = await Player.findOne({
         guildId: guild.id,
