@@ -198,7 +198,7 @@ async function runAddPlayer({ guild, captainUserId, targetUser, customName, repl
         guildId: guild.id,
         $or: [
             { registrationOpen: true },
-            { currentPhase: { $in: ['registration', 'league', 'groups', 'knockout'] } }
+            { currentPhase: { $in: ['registration', 'league', 'groups', 'super8', 'knockout'] } }
         ]
     }).sort({ createdAt: -1 });
 

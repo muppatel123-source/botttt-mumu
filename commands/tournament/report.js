@@ -476,7 +476,7 @@ async function processFixtureReport({ client, guild, tournament, fixtureId, home
         throw new Error('Fixture not found or already played.');
     }
 
-    const affectsStandings = ['league', 'group'].includes(fixture.phase);
+    const affectsStandings = ['league', 'group', 'super8'].includes(fixture.phase);
 
     // ── Determine winner ──
     const winner =

@@ -33,7 +33,7 @@ const tournamentSettingsSchema = new mongoose.Schema(
 
         formatType: {
             type: String,
-            enum: ['league', 'groups_knockout', 'mega_table_playoffs', 'custom'],
+            enum: ['league', 'groups_knockout', 'mega_table_playoffs', 'club_world_cup', 'custom'],
             default: 'league'
         },
 
@@ -71,6 +71,11 @@ const tournamentSettingsSchema = new mongoose.Schema(
             default: 0
         },
 
+        super8QualificationSpots: {
+            type: Number,
+            default: 4
+        },
+
         standingsBackground: {
             type: String,
             default: null
@@ -103,7 +108,7 @@ const tournamentSettingsSchema = new mongoose.Schema(
 
         currentPhase: {
             type: String,
-            enum: ['registration', 'league', 'groups', 'knockout', 'completed'],
+            enum: ['registration', 'league', 'groups', 'super8', 'knockout', 'completed'],
             default: 'registration'
         },
 
@@ -495,6 +500,7 @@ const fixtureSchema = new mongoose.Schema(
             enum: [
                 'league',
                 'group',
+                'super8',
                 'qualifier',
                 'eliminator',
                 'quarterfinal',
@@ -740,6 +746,11 @@ const serverConfigSchema = new mongoose.Schema(
             default: true
         },
 
+        transfersLocked: {
+            type: Boolean,
+            default: false
+        },
+
         emojis: {
             stats: {
             played: { type: String, default: '<:Stadium:1487010283506630776>' },
@@ -760,7 +771,9 @@ const serverConfigSchema = new mongoose.Schema(
     },
 
             trophy: {
-            default: { type: String, default: '🏆' }
+            default: { type: String, default: '<:_Trophy:1507987705311793152>' },
+            champion: { type: String, default: '<:_Trophy:1507987705311793152>' },
+            runner_up: { type: String, default: '🥈' }
     }
         }
     },

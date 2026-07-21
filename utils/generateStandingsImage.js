@@ -13,67 +13,8 @@ const fs = require('fs');
 const { createCanvas, GlobalFonts, loadImage } = require('@napi-rs/canvas');
 const axios = require('axios');
 
-const { TournamentTeam, Fixture } = require('../models/Tournament');
+const { TournamentTeam } = require('../models/Tournament');
 const { sortTeams, getQualificationZone, compactName } = require('./standingsHelpers');
-
-/*
-
-/*
-========================================
-FORM — Last 5 matches (W/D/L)
-========================================
-*/
-
-async function fetchRecentForms(tournamentTeams, guildId, tournamentId) {
-    const forms = new Map();
-
-    const fixtures = await Fixture.find({
-        guildId,
-        tournamentId,
-        status: 'Played'
-    }).sort({ updatedAt: -1 }).lean();
-
-    const teamFixtures = new Map();
-    for (const team of tournamentTeams) {
-        teamFixtures.set(String(team._id), []);
-    }
-
-    for (const fx of fixtures) {
-        const homeId = String(fx.homeTournamentTeamId);
-        const awayId = String(fx.awayTournamentTeamId);
-
-        if (teamFixtures.has(homeId)) {
-            teamFixtures.get(homeId).push({ fx, isHome: true });
-        }
-        if (teamFixtures.has(awayId)) {
-            teamFixtures.get(awayId).push({ fx, isHome: false });
-        }
-    }
-
-    for (const team of tournamentTeams) {
-        const teamId = String(team._id);
-        const matches = teamFixtures.get(teamId) || [];
-
-        matches.sort((a, b) => new Date(b.fx.updatedAt) - new Date(a.fx.updatedAt));
-        const last5 = matches.slice(0, 5);
-
-        const form = [];
-        for (const { fx, isHome } of last5.reverse()) {
-            const homeGoals = fx.result?.home ?? 0;
-            const awayGoals = fx.result?.away ?? 0;
-            const teamGoals = isHome ? homeGoals : awayGoals;
-            const oppGoals = isHome ? awayGoals : homeGoals;
-
-            if (teamGoals > oppGoals) form.push('W');
-            else if (teamGoals < oppGoals) form.push('L');
-            else form.push('D');
-        }
-
-        forms.set(teamId, form);
-    }
-
-    return forms;
-}
 
 /*
 ========================================
@@ -245,9 +186,7 @@ async function generateStandingsImage({ settings, guildId, groupKey = null }) {
     const logoCache = new Map();
     await preloadLogos(sorted, logoCache);
 
-    const formMap = await fetchRecentForms(tournamentTeams, guildId, settings._id);
-
-    return renderImage({ settings, sorted, zones, groupKey, logoCache, formMap });
+    return renderImage({ settings, sorted, zones, groupKey, logoCache });
 }
 
 /*
@@ -274,10 +213,10 @@ RENDERING
 ========================================
 */
 
-async function renderImage({ settings, sorted, zones, groupKey, logoCache, formMap }) {
+async function renderImage({ settings, sorted, zones, groupKey, logoCache }) {
     const count = sorted.length;
     const c = THEME.container;
-    const tableW = Math.max(820, Math.min(1000, 820 + (count > 10 ? 50 : 0)));
+    const tableW = Math.max(740, Math.min(920, 740 + (count > 10 ? 50 : 0)));
 
     const tableH =
         THEME.title.height +
@@ -327,8 +266,7 @@ async function renderImage({ settings, sorted, zones, groupKey, logoCache, formM
             isEven: i % 2 === 0,
             teamColor: sorted[i].teamId?.color || null,
             logoKey: sorted[i]._id?.toString() || sorted[i].teamNameSnapshot,
-            logoCache,
-            formMap
+            logoCache
         });
 
         y += THEME.row.height;
@@ -454,7 +392,8 @@ function drawTitle(ctx, { settings, groupKey, x, y, w }) {
     ctx.fillRect(x, y + t.height - 1.5, w, 1.5);
 
     const name = (settings.name || 'Tournament').toUpperCase();
-    const group = groupKey ? ` \u2014 GROUP ${groupKey}` : '';
+    const phaseLabel = settings.currentPhase === 'super8' ? ' \u2014 SUPER 8' : '';
+    const group = groupKey ? ` \u2014 GROUP ${groupKey}` : phaseLabel;
 
     let textX = x + SIZES.paddingX;
     const midY = y + t.height / 2;
@@ -505,27 +444,26 @@ function calculateColumns(tableW) {
         pos:   { x: px, w: 38 },
         logo:  { x: px + 42, w: SIZES.logoSize + SIZES.logoPad },
         team:  { x: 0, w: 0 },
-        played:{ x: 0, w: 34 },
-        wins:  { x: 0, w: 34 },
-        draws: { x: 0, w: 34 },
-        losses:{ x: 0, w: 34 },
-        gf:    { x: 0, w: 38 },
-        ga:    { x: 0, w: 38 },
-        gd:    { x: 0, w: 44 },
-        form:  { x: 0, w: 72 },
-        points:{ x: 0, w: 44 }
+        played:{ x: 0, w: 36 },
+        wins:  { x: 0, w: 36 },
+        draws: { x: 0, w: 36 },
+        losses:{ x: 0, w: 36 },
+        gf:    { x: 0, w: 40 },
+        ga:    { x: 0, w: 40 },
+        gd:    { x: 0, w: 46 },
+        points:{ x: 0, w: 46 }
     };
 
     const fixed =
         c.pos.w + c.logo.w +
         c.played.w + c.wins.w + c.draws.w + c.losses.w +
-        c.gf.w + c.ga.w + c.gd.w + c.form.w + c.points.w;
+        c.gf.w + c.ga.w + c.gd.w + c.points.w;
 
     c.team.w = usable - fixed;
     c.team.x = c.logo.x + c.logo.w;
 
     let nx = c.team.x + c.team.w;
-    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'form', 'points']) {
+    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'points']) {
         c[key].x = nx;
         nx += c[key].w;
     }
@@ -570,7 +508,7 @@ function drawHeader(ctx, { cols, x, y, w }) {
     ctx.textAlign = 'center';
     const headers = {
         played: 'P', wins: 'W', draws: 'D', losses: 'L',
-        gf: 'GF', ga: 'GA', gd: 'GD', form: 'FORM', points: 'PTS'
+        gf: 'GF', ga: 'GA', gd: 'GD', points: 'PTS'
     };
 
     for (const [key, label] of Object.entries(headers)) {
@@ -579,7 +517,7 @@ function drawHeader(ctx, { cols, x, y, w }) {
 
     // Column separator lines in header
     ctx.fillStyle = 'rgba(100, 140, 200, 0.10)';
-    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'form', 'points']) {
+    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'points']) {
         ctx.fillRect(x + cols[key].x, y + 6, 1, h.height - 12);
     }
 
@@ -594,7 +532,7 @@ DRAW: TEAM ROW
 
 function drawTeamRow(ctx, {
     entry, position, zone, cols, x, y, w,
-    isEven, teamColor, logoKey, logoCache, formMap
+    isEven, teamColor, logoKey, logoCache
 }) {
     const r = THEME.row;
     const z = THEME.zone;
@@ -635,7 +573,7 @@ function drawTeamRow(ctx, {
     }
 
     // Column separator lines
-    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'form', 'points']) {
+    for (const key of ['played', 'wins', 'draws', 'losses', 'gf', 'ga', 'gd', 'points']) {
         ctx.fillStyle = r.colLine;
         ctx.fillRect(x + cols[key].x, y + 6, 1, h - 12);
     }
@@ -725,9 +663,6 @@ function drawTeamRow(ctx, {
     ctx.restore();
 
     // Stats
-    const teamId = String(entry._id);
-    const formArr = formMap?.get(teamId) || [];
-
     const statFields = {
         played: String(stats.played || 0),
         wins:   String(stats.wins || 0),
@@ -870,9 +805,13 @@ function drawLegend(ctx, { settings, zones, groupKey, x, y, w }) {
         const parts = [];
         if (hasUcl) parts.push(`UCL: Top ${settings.uclQualificationSpots || 0}`);
         if (hasQual) {
-            parts.push(groupKey
-                ? `Qualify: Top ${settings.qualificationSpotsPerGroup || 0}/group`
-                : `Qualify: Top ${settings.qualificationSpotsPerGroup || 0}`);
+            if (settings.currentPhase === 'super8' || settings.formatType === 'club_world_cup') {
+                parts.push(`Qualify: Top ${settings.super8QualificationSpots || 4} to Semifinals`);
+            } else if (groupKey) {
+                parts.push(`Qualify: Top ${settings.qualificationSpotsPerGroup || 0}/group`);
+            } else {
+                parts.push(`Qualify: Top ${settings.qualificationSpotsPerGroup || 0}`);
+            }
         }
         ctx.fillStyle = THEME.row.textMuted;
         ctx.font = `10px "${l.font}", sans-serif`;

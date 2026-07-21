@@ -224,7 +224,7 @@ async function runRegister({ guild, member, user, teamNameInput, reply }) {
         guildId: guild.id,
         $or: [
             { registrationOpen: true },
-            { currentPhase: { $in: ['registration', 'league', 'groups', 'knockout'] } }
+            { currentPhase: { $in: ['registration', 'league', 'groups', 'super8', 'knockout'] } }
         ]
     }).sort({ createdAt: -1 });
 

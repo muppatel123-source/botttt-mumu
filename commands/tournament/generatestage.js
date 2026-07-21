@@ -1,10 +1,10 @@
 /**
  * generatestage.js
  *
- * Generate league, group, or knockout fixtures for a tournament.
+ * Generate league, group, super8, or knockout fixtures for a tournament.
  * Validates teams, checks for existing fixtures, and creates match documents.
  *
- * Usage:  .generatestage [key] <league|groups|knockout> [--force]
+ * Usage:  .generatestage [key] <league|groups|super8|knockout> [--force]
  * Slash:  /generatestage stage:<stage> [key] [force]
  *
  * Aliases: genstage, gst
@@ -24,8 +24,8 @@ const { buildRoundRobinFixtures, buildKnockoutFixtures, getNextMatchNumber } = r
 
 module.exports = {
     name: 'generatestage',
-    description: 'Generate league, group, or knockout fixtures for a tournament.',
-    usage: '.generatestage [key] <league|groups|knockout> [--force]',
+    description: 'Generate league, group, super8, or knockout fixtures for a tournament.',
+    usage: '.generatestage [key] <league|groups|super8|knockout> [--force]',
     aliases: ['genstage', 'gst'],
     hidden: true,
     cooldown: 5,
@@ -35,19 +35,20 @@ module.exports = {
         .setName('generatestage')
         .setDescription('Generate tournament stage')
         .addStringOption(opt =>
+            opt.setName('key')
+                .setDescription('Optional tournament key')
+                .setRequired(false)
+        )
+        .addStringOption(opt =>
             opt.setName('stage')
                 .setDescription('Stage to generate')
                 .setRequired(true)
                 .addChoices(
                     { name: 'League', value: 'league' },
                     { name: 'Groups', value: 'groups' },
+                    { name: 'Super 8', value: 'super8' },
                     { name: 'Knockout', value: 'knockout' }
                 )
-        )
-        .addStringOption(opt =>
-            opt.setName('key')
-                .setDescription('Optional tournament key')
-                .setRequired(false)
         )
         .addBooleanOption(opt =>
             opt.setName('force')
@@ -121,16 +122,18 @@ function parsePrefixArgs(args) {
     let stage = null;
     let force = false;
 
+    const validStages = ['league', 'groups', 'super8', 'knockout'];
+
     for (const arg of args) {
         if (arg === '--force') force = true;
-        else if (['league', 'groups', 'knockout'].includes(arg.toLowerCase())) stage = arg.toLowerCase();
+        else if (validStages.includes(arg.toLowerCase())) stage = arg.toLowerCase();
         else if (!key) key = arg.toLowerCase();
     }
 
     if (!stage) {
         return {
             ok: false,
-            error: '❌ Usage: `.generatestage [key] <league|groups|knockout> [--force]`'
+            error: '❌ Usage: `.generatestage [key] <league|groups|super8|knockout> [--force]`'
         };
     }
 
@@ -161,6 +164,7 @@ async function runGenerate({ guild, key, stage, force, reply }) {
 
     if (stage === 'league') return generateLeague({ guild, tournament, teams, force, reply });
     if (stage === 'groups') return generateGroups({ guild, tournament, teams, force, reply });
+    if (stage === 'super8') return generateSuper8({ guild, tournament, teams, force, reply });
     if (stage === 'knockout') return generateKnockout({ guild, tournament, teams, force, reply });
 
     return reply({ content: '❌ Unknown stage type.' });
@@ -207,7 +211,7 @@ async function generateLeague({ guild, tournament, teams, force, reply }) {
     tournament.currentPhase = 'league';
     await tournament.save();
 
-    return successReply(reply, tournament, '🏟️ LEAGUE GENERATED', fixtures.length);
+    return successReply(reply, tournament, 'LEAGUE GENERATED', fixtures.length);
 }
 
 /* ====================================================
@@ -239,7 +243,7 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    /* ── Ensure all teams have group assignments ── */
+    /* -- Ensure all teams have group assignments -- */
     const unassigned = teams.filter(t => !t.groupKey);
 
     if (unassigned.length) {
@@ -250,7 +254,7 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    /* ── Generate round-robin per group ── */
+    /* -- Generate round-robin per group -- */
     const groupKeys = Array.from(
         { length: tournament.groupCount },
         (_, i) => String.fromCharCode(65 + i)
@@ -287,7 +291,69 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
     tournament.currentPhase = 'groups';
     await tournament.save();
 
-    return successReply(reply, tournament, '📦 GROUP STAGE GENERATED', fixtures.length);
+    return successReply(reply, tournament, 'GROUP STAGE GENERATED', fixtures.length);
+}
+
+/* ====================================================
+   SUPER 8 GENERATOR
+   Club World Cup format: 8 qualified teams play single
+   round-robin (7 games each). Random seeding.
+==================================================== */
+
+async function generateSuper8({ guild, tournament, teams, force, reply }) {
+    if (tournament.formatType !== 'club_world_cup') {
+        return reply({ content: '❌ Super 8 stage is only available for Club World Cup format tournaments.' });
+    }
+
+    const existing = await Fixture.countDocuments({
+        guildId: guild.id,
+        tournamentId: tournament._id,
+        phase: 'super8'
+    });
+
+    if (existing && !force) {
+        return reply({
+            content: `❌ Super 8 fixtures already exist: **${existing}**. Use \`--force\` to regenerate.`
+        });
+    }
+
+    if (existing && force) {
+        await Fixture.deleteMany({
+            guildId: guild.id,
+            tournamentId: tournament._id,
+            phase: 'super8'
+        });
+    }
+
+    /* -- Get qualified teams from group stage -- */
+    const qualified = getGroupQualifiedTeams({ tournament, teams });
+
+    if (qualified.length < 2) {
+        return reply({
+            content: `❌ Not enough qualified teams for Super 8: **${qualified.length}**. Play group stage first.`
+        });
+    }
+
+    /* -- Random shuffle for seeding -- */
+    shuffleArray(qualified);
+
+    const fixtures = buildRoundRobinFixtures({
+        guildId: guild.id,
+        tournament,
+        teams: qualified,
+        phase: 'super8',
+        roundPrefix: 'Super 8 Matchday',
+        groupKey: null,
+        homeAway: false,
+        startMatchNumber: await getNextMatchNumber(guild.id, tournament._id)
+    });
+
+    await Fixture.insertMany(fixtures);
+
+    tournament.currentPhase = 'super8';
+    await tournament.save();
+
+    return successReply(reply, tournament, 'SUPER 8 GENERATED', fixtures.length);
 }
 
 /* ====================================================
@@ -325,8 +391,15 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    /* ── Get qualified teams sorted by standings ── */
-    const qualified = await getQualifiedTeams({ tournament, teams });
+    /* -- Get qualified teams -- */
+    let qualified;
+
+    if (tournament.formatType === 'club_world_cup' && round === 'semifinal') {
+        // For Club World Cup: top 4 from Super 8 → 1st vs 4th, 2nd vs 3rd
+        qualified = getSuper8QualifiedTeams({ tournament, teams });
+    } else {
+        qualified = await getQualifiedTeams({ tournament, teams });
+    }
 
     if (qualified.length < 2 || qualified.length % 2 !== 0) {
         return reply({
@@ -334,7 +407,7 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    /* ── Pair up teams ── */
+    /* -- Pair up teams -- */
     const pairs = [];
     for (let i = 0; i < qualified.length; i += 2) {
         pairs.push([qualified[i], qualified[i + 1]]);
@@ -358,7 +431,7 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
     tournament.currentPhase = 'knockout';
     await tournament.save();
 
-    return successReply(reply, tournament, `🏆 ${prettyPhase(round).toUpperCase()} GENERATED`, fixtures.length);
+    return successReply(reply, tournament, `${prettyPhase(round).toUpperCase()} GENERATED`, fixtures.length);
 }
 
 /* ====================================================
@@ -391,9 +464,13 @@ function resolveNextKnockoutRound(tournament) {
 /**
  * Derive the number of qualified teams from tournament settings.
  * For groups_knockout format: groupCount * qualificationSpotsPerGroup
+ * For club_world_cup format: super8QualificationSpots (from Super 8 to semis)
  * Otherwise: teamCount or 4
  */
 function deriveQualifiedCount(tournament) {
+    if (tournament.formatType === 'club_world_cup') {
+        return tournament.super8QualificationSpots || 4;
+    }
     if (tournament.formatType === 'groups_knockout' && tournament.groupCount > 0) {
         return tournament.groupCount * (tournament.qualificationSpotsPerGroup || 2);
     }
@@ -404,26 +481,22 @@ function deriveQualifiedCount(tournament) {
  * Given the total number of qualified teams, return the
  * ordered array of knockout round phase strings.
  *
- * 2  → ['final']
- * 4  → ['semifinal', 'final']
- * 8  → ['quarterfinal', 'semifinal', 'final']
- * 16 → ['roundof16', 'quarterfinal', 'semifinal', 'final']
+ * 2  -> ['final']
+ * 4  -> ['semifinal', 'final']
+ * 8  -> ['quarterfinal', 'semifinal', 'final']
+ * 16 -> ['roundof16', 'quarterfinal', 'semifinal', 'final']
  */
 function deriveKnockoutRounds(qualifiedTeamCount) {
     const ALL_ROUNDS = ['roundof16', 'quarterfinal', 'semifinal', 'final'];
     const total = Math.max(2, qualifiedTeamCount);
 
-    // How many rounds do we need?  log2(total)
     const roundCount = Math.log2(total);
-
-    // If not a power of 2, round up
     const roundedCount = Math.ceil(roundCount);
 
-    // Slice from the end of ALL_ROUNDS
     return ALL_ROUNDS.slice(ALL_ROUNDS.length - roundedCount);
 }
 
-/** Get qualified teams sorted by standings (points → GD → GF), with cross-group seeding. */
+/** Get qualified teams sorted by standings (points -> GD -> GF), with cross-group seeding. */
 async function getQualifiedTeams({ tournament, teams }) {
     const groupKeys = [...new Set(teams.map(t => t.groupKey).filter(Boolean))].sort();
     const spotsPerGroup = tournament.qualificationSpotsPerGroup || 2;
@@ -433,7 +506,7 @@ async function getQualifiedTeams({ tournament, teams }) {
         return crossGroupSeed({ teams, groupKeys, spotsPerGroup });
     }
 
-    // Fallback: flat standings — take top N overall
+    // Fallback: flat standings -- take top N overall
     const sorted = [...teams].sort((a, b) => {
         const as = a.stats || {};
         const bs = b.stats || {};
@@ -457,26 +530,98 @@ async function getQualifiedTeams({ tournament, teams }) {
 }
 
 /**
+ * Get qualified teams from group stage for Club World Cup format.
+ * Top N from each group (default 2), returned as flat list.
+ * No cross-seeding needed since Super 8 is round-robin, not knockout.
+ */
+function getGroupQualifiedTeams({ tournament, teams }) {
+    const groupKeys = [...new Set(teams.map(t => t.groupKey).filter(Boolean))].sort();
+    const spotsPerGroup = tournament.qualificationSpotsPerGroup || 2;
+
+    if (groupKeys.length === 0) {
+        // No groups assigned yet -- return all teams sorted by stats
+        const sorted = [...teams].sort((a, b) => {
+            const as = a.stats || {};
+            const bs = b.stats || {};
+            if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
+            const agd = (as.gf || 0) - (as.ga || 0);
+            const bgd = (bs.gf || 0) - (bs.ga || 0);
+            if (bgd !== agd) return bgd - agd;
+            return (bs.gf || 0) - (as.gf || 0);
+        });
+
+        return sorted.slice(0, 8).map(entry => ({
+            tournamentTeamId: entry._id,
+            teamId: entry.teamId?._id || entry.teamId,
+            name: entry.teamId?.name || entry.teamNameSnapshot
+        }));
+    }
+
+    const qualified = [];
+    for (const groupKey of groupKeys) {
+        const groupTeams = [...teams]
+            .filter(t => t.groupKey === groupKey)
+            .sort((a, b) => {
+                const as = a.stats || {};
+                const bs = b.stats || {};
+                if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
+                const agd = (as.gf || 0) - (as.ga || 0);
+                const bgd = (bs.gf || 0) - (bs.ga || 0);
+                if (bgd !== agd) return bgd - agd;
+                return (bs.gf || 0) - (as.gf || 0);
+            })
+            .slice(0, spotsPerGroup);
+
+        for (const entry of groupTeams) {
+            qualified.push({
+                tournamentTeamId: entry._id,
+                teamId: entry.teamId?._id || entry.teamId,
+                name: entry.teamId?.name || entry.teamNameSnapshot
+            });
+        }
+    }
+
+    return qualified;
+}
+
+/**
+ * Get top N from Super 8 standings for Club World Cup semifinals.
+ * Sorted by points -> GD -> GF. Matchups: 1st vs 4th, 2nd vs 3rd.
+ */
+function getSuper8QualifiedTeams({ tournament, teams }) {
+    const spots = tournament.super8QualificationSpots || 4;
+
+    // Super 8 is a single table -- sort by standings
+    const sorted = [...teams].sort((a, b) => {
+        const as = a.stats || {};
+        const bs = b.stats || {};
+        if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
+        const agd = (as.gf || 0) - (as.ga || 0);
+        const bgd = (bs.gf || 0) - (bs.ga || 0);
+        if (bgd !== agd) return bgd - agd;
+        return (bs.gf || 0) - (as.gf || 0);
+    });
+
+    const topN = sorted.slice(0, spots).map(entry => ({
+        tournamentTeamId: entry._id,
+        teamId: entry.teamId?._id || entry.teamId,
+        name: entry.teamId?.name || entry.teamNameSnapshot
+    }));
+
+    // Pair: 1st vs 4th, 2nd vs 3rd
+    if (topN.length === 4) {
+        return [topN[0], topN[3], topN[1], topN[2]];
+    }
+
+    // Fallback for other counts: just pair sequentially
+    return topN;
+}
+
+/**
  * Cross-group seeding: sort within each group, then interleave
  * so teams from the same group meet as late as possible.
- *
- * For 2 groups with top 4 each (8 total):
- *   A1 vs B4, A2 vs B3, B2 vs A3, B1 vs A4
- *
- * General pattern for 2 groups:
- *   Group A positions: 1, 2, 3, 4 → paired with B: 4, 3, 2, 1
- *   Then merge: A1, B1, A2, B2, A3, B3, A4, B4
- *   Pairs: (A1 vs B4), (B1 vs A4) ... no wait.
- *
- * Standard bracket seeding for N groups, M spots per group:
- *   Step 1: Rank within each group → A1,A2,...Am; B1,B2,...Bm
- *   Step 2: Snake-draft order to produce bracket positions:
- *     Pos 1: A1, Pos 2: Bm, Pos 3: B1, Pos 4: Am,
- *     Pos 5: A2, Pos 6: B(m-1), Pos 7: B2, Pos 8: A(m-1), ...
- *   Step 3: Pair pos 1v2, 3v4, 5v6, 7v8 → A1 vs Bm, B1 vs Am, A2 vs B(m-1), B2 vs A(m-1)
  */
 function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
-    // Sort teams within each group by standings
     const groups = {};
     for (const key of groupKeys) {
         groups[key] = teams
@@ -498,19 +643,15 @@ function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
             }));
     }
 
-    // If only 1 group, just return sorted
     if (groupKeys.length === 1) {
         return groups[groupKeys[0]];
     }
 
-    // For 2 groups (most common), use standard cross-seeding:
-    // A1 vs B4, A2 vs B3, B2 vs A3, B1 vs A4
     if (groupKeys.length === 2) {
         const [gA, gB] = groupKeys;
         const a = groups[gA] || [];
         const b = groups[gB] || [];
 
-        // Interleave: A1, B_last, A2, B_second_last, ... then pair
         const bracket = [];
         for (let i = 0; i < spotsPerGroup; i++) {
             if (a[i]) bracket.push(a[i]);
@@ -520,7 +661,7 @@ function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
         return bracket;
     }
 
-    // 3+ groups: simple interleave A1,B1,C1,A2,B2,C2,...
+    // 3+ groups: simple interleave
     const bracket = [];
     for (let pos = 0; pos < spotsPerGroup; pos++) {
         for (const key of groupKeys) {
@@ -531,13 +672,22 @@ function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
     return bracket;
 }
 
+/** Fisher-Yates shuffle in place. */
+function shuffleArray(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+}
+
 /** Build a success embed for fixture generation. */
 function successReply(reply, tournament, title, count) {
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
         .setTitle(title)
         .setDescription(
-            `${tournament.emoji || '🏆'} Tournament: **${tournament.name}**\n` +
+            `${tournament.emoji || ''} Tournament: **${tournament.name}**\n` +
             `Key: \`${tournament.tournamentKey}\`\n\n` +
             `Created fixtures: **${count}**`
         )

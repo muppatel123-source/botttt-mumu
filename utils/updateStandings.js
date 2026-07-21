@@ -195,9 +195,10 @@ async function sendImageStandings({
  * Build the text caption that appears above/below the standings image.
  */
 function buildImageCaption({ settings, groupKey }) {
-    const emoji = settings.emoji || '🏆';
+    const emoji = settings.emoji || '';
     const name = settings.name || 'Tournament';
-    const groupLabel = groupKey ? ` — Group ${groupKey}` : '';
+    const phaseLabel = settings.currentPhase === 'super8' ? ' — SUPER 8' : '';
+    const groupLabel = groupKey ? ` — Group ${groupKey}` : phaseLabel;
 
     return (
         `${emoji} **${name.toUpperCase()}${groupLabel} LIVE STANDINGS**\n` +
@@ -275,12 +276,10 @@ async function sendTextStandings({
  * Uses shared helpers. No duplicated sort/zone logic.
  */
 function buildStandingsText({ settings, guildId, groupKey }) {
-    // Note: We don't have teams here since this is a fallback.
-    // For a proper text fallback we'd need to query TournamentTeam
-    // again, but that's wasteful. Instead, show a simple message.
-    const emoji = settings.emoji || '🏆';
+    const emoji = settings.emoji || '';
     const name = settings.name || 'Tournament';
-    const groupLabel = groupKey ? ` — Group ${groupKey}` : '';
+    const phaseLabel = settings.currentPhase === 'super8' ? ' — SUPER 8' : '';
+    const groupLabel = groupKey ? ` — Group ${groupKey}` : phaseLabel;
 
     return (
         `${emoji} **${name.toUpperCase()}${groupLabel} LIVE STANDINGS**\n` +

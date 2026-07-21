@@ -21,7 +21,7 @@ module.exports = {
     description: 'Create or update tournament settings.',
     usage: '.settournament <key> format=league mode=auto name=League_S1 teams=10',
     aliases: ['tsetup', 'tournamentsetup'],
-    hidden: false,
+    hidden: true,
     cooldown: 5,
     userPermissions: [PermissionFlagsBits.SendMessages],
 
@@ -41,6 +41,7 @@ module.exports = {
                     { name: 'League', value: 'league' },
                     { name: 'Groups + Knockout', value: 'groups_knockout' },
                     { name: 'Mega Table + Playoffs', value: 'mega_table_playoffs' },
+                    { name: 'Club World Cup', value: 'club_world_cup' },
                     { name: 'Custom', value: 'custom' }
                 )
         )
@@ -75,6 +76,7 @@ module.exports = {
                     { name: 'Registration', value: 'registration' },
                     { name: 'League', value: 'league' },
                     { name: 'Groups', value: 'groups' },
+                    { name: 'Super 8', value: 'super8' },
                     { name: 'Knockout', value: 'knockout' },
                     { name: 'Completed', value: 'completed' }
                 )
@@ -220,6 +222,7 @@ function buildUpdatePayload(guildId, tournamentKey, data) {
     if (typeof data.currentPhase !== 'undefined') payload.currentPhase = data.currentPhase;
     if (typeof data.captainRoleId !== 'undefined') payload.captainRoleId = data.captainRoleId;
     if (typeof data.tournamentPlayerRoleId !== 'undefined') payload.tournamentPlayerRoleId = data.tournamentPlayerRoleId;
+    if (typeof data.emoji !== 'undefined') payload.emoji = data.emoji;
 
     return payload;
 }
@@ -277,9 +280,9 @@ function normalizeAliases(data) {
 }
 
 function validateSettings(data) {
-    const formats = ['league', 'groups_knockout', 'mega_table_playoffs', 'custom'];
+    const formats = ['league', 'groups_knockout', 'mega_table_playoffs', 'club_world_cup', 'custom'];
     const modes = ['auto', 'manual_draw', 'hybrid'];
-    const phases = ['registration', 'league', 'groups', 'knockout', 'completed'];
+    const phases = ['registration', 'league', 'groups', 'super8', 'knockout', 'completed'];
     const rounds = ['qualifier', 'eliminator', 'roundof16', 'quarterfinal', 'semifinal', 'final'];
 
     if (!data.format) return { ok: false, error: 'Missing `format`.' };
@@ -314,21 +317,34 @@ function validateSettings(data) {
 }
 
 function buildSummary(settings) {
-    return [
+    const lines = [
         `**Key:** \`${settings.tournamentKey}\``,
         `**Name:** ${settings.name}`,
-        `**Format:** ${settings.formatType}`,
+        `**Format:** ${settings.formatType === 'club_world_cup' ? 'Club World Cup' : settings.formatType}`,
         `**Mode:** ${settings.schedulingMode}`,
         `**Teams:** ${settings.teamCount}`,
-        `**Groups:** ${settings.groupCount}`,
-        `**Teams/Group:** ${settings.teamsPerGroup}`,
+    ];
+
+    if (settings.formatType === 'club_world_cup') {
+        lines.push(`**Groups:** ${settings.groupCount} (${settings.teamsPerGroup || 4} teams each)`);
+        lines.push(`**Qualify from Groups:** Top ${settings.qualificationSpotsPerGroup || 2} per group`);
+        lines.push(`**Super 8 Qualify:** Top ${settings.super8QualificationSpots || 4} to Semifinals`);
+        lines.push(`**Knockout Rounds:** ${(settings.knockoutRounds || []).map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' → ') || 'None'}`);
+    } else {
+        lines.push(`**Groups:** ${settings.groupCount}`);
+        lines.push(`**Teams/Group:** ${settings.teamsPerGroup}`);
+        lines.push(`**Knockouts:** ${settings.hasKnockout ? 'Yes' : 'No'}`);
+    }
+
+    lines.push(
         `**Home & Away:** ${settings.homeAway ? 'Yes' : 'No'}`,
-        `**Knockouts:** ${settings.hasKnockout ? 'Yes' : 'No'}`,
         `**Current Phase:** ${settings.currentPhase}`,
         `**Registration Open:** ${settings.registrationOpen ? 'Yes' : 'No'}`,
         `**Captain Role:** ${settings.captainRoleId ? `<@&${settings.captainRoleId}>` : 'None'}`,
         `**Player Role:** ${settings.tournamentPlayerRoleId ? `<@&${settings.tournamentPlayerRoleId}>` : 'None'}`
-    ].join('\n');
+    );
+
+    return lines.join('\n');
 }
 
 function normalizeValue(value, key = '') {

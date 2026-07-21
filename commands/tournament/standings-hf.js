@@ -271,8 +271,10 @@ function buildCaption({ tournament, selectedGroup }) {
     const emoji = tournament.emoji || '🏆';
     const name = (tournament.name || 'Tournament').toUpperCase();
     const groupLabel = selectedGroup ? ` — Group ${selectedGroup}` : '';
+    const phaseLabel = tournament.currentPhase === 'super8' ? ' — SUPER 8' : '';
+    const label = selectedGroup ? groupLabel : phaseLabel;
 
-    return `${emoji} **${name}${groupLabel} STANDINGS**\nKey: \`${tournament.tournamentKey}\``;
+    return `${emoji} **${name}${label} STANDINGS**\nKey: \`${tournament.tournamentKey}\``;
 }
 
 /* ====================================================
@@ -312,9 +314,12 @@ async function generateTextTable({
 
     teams = sortTeams(teams);
 
+    const phaseLabel = tournament.currentPhase === 'super8' ? 'SUPER 8' : '';
     let table = groupKey
-        ? `🏆 **${tournament.name.toUpperCase()} — GROUP ${groupKey} STANDINGS**\n`
-        : `🏆 **${tournament.name.toUpperCase()} — STANDINGS**\n`;
+        ? `**${tournament.name.toUpperCase()} — GROUP ${groupKey} STANDINGS**\n`
+        : phaseLabel
+            ? `**${tournament.name.toUpperCase()} — ${phaseLabel} STANDINGS**\n`
+            : `**${tournament.name.toUpperCase()} — STANDINGS**\n`;
 
     table += `Key: \`${tournament.tournamentKey}\`\n`;
     table += '```ansi\n';
@@ -422,6 +427,9 @@ function buildTournamentDropdown(tournaments, selectedKey) {
 function buildGroupButtons(tournament, selectedGroup) {
     const groupCount = tournament.groupCount || 0;
 
+    // Super 8 phase: no group buttons (single table)
+    if (tournament.currentPhase === 'super8') return null;
+
     if (!groupCount) return null;
 
     const buttons = [
@@ -449,5 +457,7 @@ function buildGroupButtons(tournament, selectedGroup) {
 }
 
 function getFirstGroup(tournament) {
+    // Super 8 is a single table, no groups
+    if (tournament.currentPhase === 'super8') return null;
     return (tournament.groupCount || 0) > 0 ? 'A' : null;
 }

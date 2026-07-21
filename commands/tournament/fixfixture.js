@@ -33,15 +33,15 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('fixfixture')
         .setDescription('Repair a fixture')
-        .addIntegerOption(opt =>
-            opt.setName('match')
-                .setDescription('Match number')
-                .setRequired(true)
-        )
         .addStringOption(opt =>
             opt.setName('key')
                 .setDescription('Optional tournament key')
                 .setRequired(false)
+        )
+        .addIntegerOption(opt =>
+            opt.setName('match')
+                .setDescription('Match number')
+                .setRequired(true)
         )
         .addStringOption(opt => opt.setName('home').setDescription('New home team').setRequired(false))
         .addStringOption(opt => opt.setName('away').setDescription('New away team').setRequired(false))
@@ -53,8 +53,8 @@ module.exports = {
                 .addChoices(
                     { name: 'League', value: 'league' },
                     { name: 'Group', value: 'group' },
+                    { name: 'Super 8', value: 'super8' },
                     { name: 'Qualifier', value: 'qualifier' },
-                    { name: 'Round of 16', value: 'roundof16' },
                     { name: 'Eliminator', value: 'eliminator' },
                     { name: 'Quarter Final', value: 'quarterfinal' },
                     { name: 'Semi Final', value: 'semifinal' },

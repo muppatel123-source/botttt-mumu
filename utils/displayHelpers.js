@@ -14,6 +14,7 @@ function prettyPhase(phase) {
     const map = {
         league: 'League',
         group: 'Group Stage',
+        super8: 'Super 8',
         qualifier: 'Qualifier',
         eliminator: 'Eliminator',
         roundof16: 'Round of 16',

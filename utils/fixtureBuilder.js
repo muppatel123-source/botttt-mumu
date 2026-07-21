@@ -234,8 +234,8 @@ function buildFixtureDoc({
         homeTournamentTeamId: home.tournamentTeamId || null,
         awayTournamentTeamId: away.tournamentTeamId || null,
 
-        venueType: phase === 'final' && tournament.finalNeutralVenue ? 'neutral' : 'home',
-        venueName: phase === 'final' && tournament.finalNeutralVenue ? 'Neutral Ground' : 'Home Ground',
+        venueType: (phase === 'final' && tournament.finalNeutralVenue) || phase === 'super8' ? 'neutral' : 'home',
+        venueName: (phase === 'final' && tournament.finalNeutralVenue) || phase === 'super8' ? 'Neutral Ground' : 'Home Ground',
 
         scheduledAt: null,
         status: 'Pending',

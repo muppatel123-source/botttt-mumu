@@ -46,15 +46,15 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('undo-report')
         .setDescription('Undo a reported fixture')
-        .addIntegerOption(opt =>
-            opt.setName('match')
-                .setDescription('Match number')
-                .setRequired(true)
-        )
         .addStringOption(opt =>
             opt.setName('key')
                 .setDescription('Optional tournament key')
                 .setRequired(false)
+        )
+        .addIntegerOption(opt =>
+            opt.setName('match')
+                .setDescription('Match number')
+                .setRequired(true)
         ),
 
     /* ================================================
@@ -202,7 +202,7 @@ async function runUndo({
     const homeGoals = safeNumber(fixture.result?.home);
     const awayGoals = safeNumber(fixture.result?.away);
 
-    const affectsStandings = ['league', 'group'].includes(fixture.phase);
+    const affectsStandings = ['league', 'group', 'super8'].includes(fixture.phase);
 
     let teamStatsReversed = false;
 

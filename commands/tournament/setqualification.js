@@ -1,11 +1,13 @@
 /**
  * setqualification.js
  *
- * Set the number of qualification spots per group for a tournament.
+ * Set the number of qualification spots for a tournament.
+ * For groups_knockout: spots per group.
+ * For club_world_cup: spots per group AND spots from Super 8 to semis.
  * Organizer only.
  *
- * Usage:  .setqualification <tournamentKey> <spots>
- * Slash:  /setqualification tournament:<key> spots:<number>
+ * Usage:  .setqualification <tournamentKey> <spots> [super8spots]
+ * Slash:  /setqualification tournament:<key> spots:<number> [super8spots:<number>]
  *
  * Aliases: setq, setqualify
  */
@@ -21,8 +23,8 @@ const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
     name: 'setqualification',
-    description: 'Set qualification spots per group.',
-    usage: '.setqualification <tournamentKey> <spots>',
+    description: 'Set qualification spots.',
+    usage: '.setqualification <tournamentKey> <spots> [super8spots]',
     aliases: ['setq', 'setqualify'],
     hidden: false,
     cooldown: 3,
@@ -30,7 +32,7 @@ module.exports = {
 
     data: new SlashCommandBuilder()
         .setName('setqualification')
-        .setDescription('Set qualification spots per group')
+        .setDescription('Set qualification spots')
         .addStringOption(opt =>
             opt.setName('tournament')
                 .setDescription('Tournament key')
@@ -38,8 +40,13 @@ module.exports = {
         )
         .addIntegerOption(opt =>
             opt.setName('spots')
-                .setDescription('Qualification spots')
+                .setDescription('Qualification spots per group')
                 .setRequired(true)
+        )
+        .addIntegerOption(opt =>
+            opt.setName('super8spots')
+                .setDescription('Club World Cup: spots from Super 8 to semis (default 4)')
+                .setRequired(false)
         ),
 
     /* ================================================
@@ -56,10 +63,11 @@ module.exports = {
 
             const tournamentKey = args[0]?.toLowerCase();
             const spots = Number(args[1]);
+            const super8spots = args[2] ? Number(args[2]) : undefined;
 
             if (!tournamentKey || !spots || spots < 1) {
                 return message.reply(
-                    '❓ Usage: `.setqualification <tournamentKey> <spots>`'
+                    '❓ Usage: `.setqualification <tournamentKey> <spots> [super8spots]`'
                 );
             }
 
@@ -67,6 +75,7 @@ module.exports = {
                 guildId: message.guild.id,
                 tournamentKey,
                 spots,
+                super8spots,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
@@ -92,11 +101,13 @@ module.exports = {
 
             const tournamentKey = interaction.options.getString('tournament').toLowerCase();
             const spots = interaction.options.getInteger('spots');
+            const super8spots = interaction.options.getInteger('super8spots') ?? undefined;
 
             return await runUpdateQualification({
                 guildId: interaction.guild.id,
                 tournamentKey,
                 spots,
+                super8spots,
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
@@ -118,16 +129,48 @@ module.exports = {
    CORE LOGIC
 ==================================================== */
 
-async function runUpdateQualification({ guildId, tournamentKey, spots, reply }) {
+async function runUpdateQualification({ guildId, tournamentKey, spots, super8spots, reply }) {
     const tournament = await TournamentSettings.findOne({ guildId, tournamentKey });
 
     if (!tournament) {
         return reply({ content: `❌ Tournament \`${tournamentKey}\` not found.` });
     }
 
+    // Club World Cup format
+    if (tournament.formatType === 'club_world_cup') {
+        tournament.qualificationSpotsPerGroup = spots;
+        if (super8spots !== undefined) {
+            tournament.super8QualificationSpots = super8spots;
+        }
+
+        // Derive knockout rounds from super8 spots
+        const s8spots = tournament.super8QualificationSpots || 4;
+        tournament.knockoutRounds = deriveKnockoutRounds(s8spots);
+        tournament.hasKnockout = true;
+
+        await tournament.save();
+
+        const roundsStr = tournament.knockoutRounds.length
+            ? tournament.knockoutRounds.map(r => r.charAt(0).toUpperCase() + r.slice(1)).join(' → ')
+            : 'None';
+
+        const embed = new EmbedBuilder()
+            .setColor(0x2ECC71)
+            .setTitle('QUALIFICATION UPDATED')
+            .setDescription(
+                `Tournament: **${tournament.name}**\n\n` +
+                `Qualify from each group to Super 8: **${spots}**\n` +
+                `Qualify from Super 8 to Knockout: **${s8spots}**\n` +
+                `Knockout rounds: **${roundsStr}**`
+            )
+            .setTimestamp();
+
+        return reply({ embeds: [embed] });
+    }
+
+    // Standard groups_knockout format
     tournament.qualificationSpotsPerGroup = spots;
 
-    // Recalculate knockout rounds based on new qualification count
     if (tournament.groupCount > 0) {
         const qualifiedCount = tournament.groupCount * spots;
         tournament.knockoutRounds = deriveKnockoutRounds(qualifiedCount);
@@ -143,7 +186,7 @@ async function runUpdateQualification({ guildId, tournamentKey, spots, reply }) 
 
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
-        .setTitle('✅ QUALIFICATION UPDATED')
+        .setTitle('QUALIFICATION UPDATED')
         .setDescription(
             `Tournament: **${tournament.name}**\n\n` +
             `Teams qualifying from each group: **${spots}**\n` +

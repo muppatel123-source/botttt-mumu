@@ -51,6 +51,7 @@ module.exports = {
                 .addChoices(
                     { name: 'League', value: 'league' },
                     { name: 'Group', value: 'group' },
+                    { name: 'Super 8', value: 'super8' },
                     { name: 'Qualifier', value: 'qualifier' },
                     { name: 'Eliminator', value: 'eliminator' },
                     { name: 'Quarter Final', value: 'quarterfinal' },

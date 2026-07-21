@@ -85,6 +85,15 @@ function compactName(name, maxLen = 12) {
 function getQualificationZone({ position, settings, groupKey }) {
     if (!settings) return 'neutral';
 
+    // ── SUPER 8 VIEW ──
+    if (settings.currentPhase === 'super8' || settings.formatType === 'club_world_cup') {
+        if (!groupKey && settings.formatType === 'club_world_cup') {
+            const spots = settings.super8QualificationSpots || 0;
+            if (spots > 0 && position <= spots) return 'qualification';
+            return 'neutral';
+        }
+    }
+
     // ── GROUP VIEW ──
     if (groupKey) {
         if (!settings.hasKnockout) return 'neutral';

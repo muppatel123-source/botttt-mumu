@@ -470,7 +470,7 @@ async function completeTransfer({ guild, targetPlayer, oldTeam, newTeam }) {
         guildId: guild.id,
         $or: [
             { registrationOpen: true },
-            { currentPhase: { $in: ['registration', 'league', 'groups', 'knockout'] } }
+            { currentPhase: { $in: ['registration', 'league', 'groups', 'super8', 'knockout'] } }
         ]
     }).sort({ createdAt: -1 });
 
