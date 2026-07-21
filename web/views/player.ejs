@@ -1,0 +1,72 @@
+<%- include('partials/header') %>
+
+<%
+const stats = player.stats || {};
+const team = player.teamId;
+const gA = (stats.goals || 0) + (stats.assists || 0);
+%>
+
+<section class="player-page">
+
+    <div class="player-card">
+
+        <div class="player-header">
+            <div>
+                <h1><%= player.name %></h1>
+                <p><%= team?.name || 'No Team' %></p>
+            </div>
+
+            <% if (team?.logoURL) { %>
+                <img src="<%= team.logoURL %>" class="team-logo">
+            <% } %>
+        </div>
+
+        <div class="stat-grid">
+
+            <div class="stat-box">
+                <span>Matches</span>
+                <strong><%= stats.played || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>MVPs</span>
+                <strong><%= stats.mvps || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>Goals</span>
+                <strong><%= stats.goals || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>Assists</span>
+                <strong><%= stats.assists || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>Saves</span>
+                <strong><%= stats.saves || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>Tackles</span>
+                <strong><%= stats.tackles || 0 %></strong>
+            </div>
+
+            <div class="stat-box">
+                <span>Interceptions</span>
+                <strong><%= stats.interceptions || 0 %></strong>
+            </div>
+
+            <div class="stat-box highlight">
+                <span>G + A</span>
+                <strong><%= gA %></strong>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<%- include('partials/footer') %>

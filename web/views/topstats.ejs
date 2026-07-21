@@ -1,0 +1,31 @@
+<%- include('partials/header') %>
+
+<section class="page-head">
+    <p class="eyebrow">Player Leaderboards</p>
+    <h1><%= settings?.name || 'Top Stats' %></h1>
+</section>
+
+<section class="leaderboard-grid">
+    <% leaderboards.forEach(board => { %>
+        <div class="leaderboard-card">
+            <h2><%= board.emoji %> <%= board.label %></h2>
+
+            <% if (!board.rows.length) { %>
+                <p class="muted">No records yet.</p>
+            <% } else { %>
+                <div class="leader-list">
+                    <% board.rows.forEach((player, index) => { %>
+                        <div class="leader-row">
+                            <span class="rank"><%= index + 1 %></span>
+                            <a href="/player/<%= player._id %>" class="player-link">
+                                <%= player.name %></a>
+                            <strong><%= player.stats?.[board.key] || 0 %></strong>
+                        </div>
+                    <% }) %>
+                </div>
+            <% } %>
+        </div>
+    <% }) %>
+</section>
+
+<%- include('partials/footer') %>

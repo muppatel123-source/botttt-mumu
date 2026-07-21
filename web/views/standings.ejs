@@ -1,0 +1,57 @@
+<%- include('partials/header') %>
+
+<section class="page-head">
+    <p class="eyebrow">League Table</p>
+    <h1><%= settings?.name || 'Standings' %></h1>
+</section>
+
+<section class="table-card">
+    <% if (!teams.length) { %>
+        <p>No teams found yet.</p>
+    <% } else { %>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Team</th>
+                        <th>P</th>
+                        <th>W</th>
+                        <th>D</th>
+                        <th>L</th>
+                        <th>GF</th>
+                        <th>GA</th>
+                        <th>GD</th>
+                        <th>Pts</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% teams.forEach((team, index) => { 
+                        const s = team.stats || {};
+                        const gd = (s.gf || 0) - (s.ga || 0);
+                    %>
+                        <tr>
+                            <td><%= index + 1 %></td>
+                            <td class="team-cell">
+                                <% if (team.logoURL) { %>
+                                    <img src="<%= team.logoURL %>" alt="">
+                                <% } %>
+                                <span><%= team.name %></span>
+                            </td>
+                            <td><%= s.played || 0 %></td>
+                            <td><%= s.wins || 0 %></td>
+                            <td><%= s.draws || 0 %></td>
+                            <td><%= s.losses || 0 %></td>
+                            <td><%= s.gf || 0 %></td>
+                            <td><%= s.ga || 0 %></td>
+                            <td><%= gd >= 0 ? '+' : '' %><%= gd %></td>
+                            <td class="points"><%= s.points || 0 %></td>
+                        </tr>
+                    <% }) %>
+                </tbody>
+            </table>
+        </div>
+    <% } %>
+</section>
+
+<%- include('partials/footer') %>

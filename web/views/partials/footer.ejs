@@ -1,0 +1,20 @@
+</main>
+
+<footer class="footer">
+    <div class="container">
+        HandFootball Tournament System
+    </div>
+</footer>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io();
+
+    socket.on('update', () => {
+        console.log('🔄 Updating page...');
+        location.reload();
+    });
+</script>
+
+</body>
+</html>
