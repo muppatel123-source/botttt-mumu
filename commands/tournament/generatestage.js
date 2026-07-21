@@ -1,8 +1,10 @@
 /**
  * generatestage.js
  *
- * Generate league, group, super8, or knockout fixtures for a tournament.
- * Validates teams, checks for existing fixtures, and creates match documents.
+ * Generate fixtures for any tournament stage. Fully auto:
+ *   - Groups: auto-assigns groups if teams have none, then generates round-robin
+ *   - Super 8: auto-picks group qualifiers, random seeds, generates round-robin
+ *   - Knockout: auto-picks from standings, figures out which round is next
  *
  * Usage:  .generatestage [key] <league|groups|super8|knockout> [--force]
  * Slash:  /generatestage stage:<stage> [key] [force]
@@ -24,7 +26,7 @@ const { buildRoundRobinFixtures, buildKnockoutFixtures, getNextMatchNumber } = r
 
 module.exports = {
     name: 'generatestage',
-    description: 'Generate league, group, super8, or knockout fixtures for a tournament.',
+    description: 'Generate tournament stage fixtures.',
     usage: '.generatestage [key] <league|groups|super8|knockout> [--force]',
     aliases: ['genstage', 'gst'],
     hidden: true,
@@ -144,7 +146,6 @@ function parsePrefixArgs(args) {
    CORE LOGIC
 ==================================================== */
 
-/** Route to the appropriate generator based on stage type. */
 async function runGenerate({ guild, key, stage, force, reply }) {
     const tournament = key
         ? await getTournamentByKey(guild.id, key)
@@ -216,6 +217,7 @@ async function generateLeague({ guild, tournament, teams, force, reply }) {
 
 /* ====================================================
    GROUP STAGE GENERATOR
+   Auto-assigns groups if teams have no groupKey yet.
 ==================================================== */
 
 async function generateGroups({ guild, tournament, teams, force, reply }) {
@@ -243,15 +245,20 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
         });
     }
 
-    /* -- Ensure all teams have group assignments -- */
+    /* -- Auto-assign groups if teams don't have them -- */
     const unassigned = teams.filter(t => !t.groupKey);
 
     if (unassigned.length) {
-        return reply({
-            content:
-                `❌ **${unassigned.length}** team(s) have no group assigned.\n` +
-                `Use draw/group assignment first, then generate groups.`
-        });
+        await autoAssignGroups(guild.id, tournament._id, teams, tournament.groupCount);
+        // Reload teams with fresh groupKey
+        const refreshed = await TournamentTeam.find({
+            guildId: guild.id,
+            tournamentId: tournament._id,
+            isActive: true
+        }).populate('teamId').sort({ createdAt: 1 });
+
+        teams.length = 0;
+        teams.push(...refreshed);
     }
 
     /* -- Generate round-robin per group -- */
@@ -291,18 +298,22 @@ async function generateGroups({ guild, tournament, teams, force, reply }) {
     tournament.currentPhase = 'groups';
     await tournament.save();
 
-    return successReply(reply, tournament, 'GROUP STAGE GENERATED', fixtures.length);
+    const autoNote = unassigned.length
+        ? `\nAuto-assigned **${unassigned.length}** teams into groups.`
+        : '';
+
+    return successReply(reply, tournament, 'GROUP STAGE GENERATED', fixtures.length, autoNote);
 }
 
 /* ====================================================
    SUPER 8 GENERATOR
-   Club World Cup format: 8 qualified teams play single
-   round-robin (7 games each). Random seeding.
+   Auto-picks qualifiers from group standings,
+   random seeds, single round-robin.
 ==================================================== */
 
 async function generateSuper8({ guild, tournament, teams, force, reply }) {
     if (tournament.formatType !== 'club_world_cup') {
-        return reply({ content: '❌ Super 8 stage is only available for Club World Cup format tournaments.' });
+        return reply({ content: '❌ Super 8 stage is only for Club World Cup format.' });
     }
 
     const existing = await Fixture.countDocuments({
@@ -330,11 +341,11 @@ async function generateSuper8({ guild, tournament, teams, force, reply }) {
 
     if (qualified.length < 2) {
         return reply({
-            content: `❌ Not enough qualified teams for Super 8: **${qualified.length}**. Play group stage first.`
+            content: `❌ Not enough qualified teams: **${qualified.length}**. Play group stage first.`
         });
     }
 
-    /* -- Random shuffle for seeding -- */
+    /* -- Random shuffle -- */
     shuffleArray(qualified);
 
     const fixtures = buildRoundRobinFixtures({
@@ -353,11 +364,20 @@ async function generateSuper8({ guild, tournament, teams, force, reply }) {
     tournament.currentPhase = 'super8';
     await tournament.save();
 
-    return successReply(reply, tournament, 'SUPER 8 GENERATED', fixtures.length);
+    const teamList = qualified.map(t => t.name).join(', ');
+
+    return successReply(
+        reply, tournament, 'SUPER 8 GENERATED', fixtures.length,
+        `\nQualified teams: **${teamList}**`
+    );
 }
 
 /* ====================================================
    KNOCKOUT GENERATOR
+   Fully auto: figures out which round to generate next.
+   - No knockout fixtures yet → creates first round (semis for CWC)
+   - Semis played → creates final from winners
+   - Any earlier round played → creates next round from winners
 ==================================================== */
 
 async function generateKnockout({ guild, tournament, teams, force, reply }) {
@@ -365,10 +385,15 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
         return reply({ content: '❌ This tournament has no knockout stage enabled.' });
     }
 
-    const round = resolveNextKnockoutRound(tournament);
+    const knockoutRounds = Array.isArray(tournament.knockoutRounds)
+        ? tournament.knockoutRounds
+        : [];
+
+    /* -- Figure out which round to generate -- */
+    const round = resolveNextKnockoutRound(guild.id, tournament, knockoutRounds);
 
     if (!round) {
-        return reply({ content: '❌ No knockout round found in tournament settings.' });
+        return reply({ content: '❌ No more knockout rounds to generate.' });
     }
 
     const existing = await Fixture.countDocuments({
@@ -395,19 +420,28 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
     let qualified;
 
     if (tournament.formatType === 'club_world_cup' && round === 'semifinal') {
-        // For Club World Cup: top 4 from Super 8 → 1st vs 4th, 2nd vs 3rd
         qualified = getSuper8QualifiedTeams({ tournament, teams });
+    } else if (round === 'semifinal' || round === 'quarterfinal' || round === 'roundof16') {
+        // First knockout round from group/league standings
+        qualified = getStandingsQualifiedTeams({ tournament, teams });
     } else {
-        qualified = await getQualifiedTeams({ tournament, teams });
+        // Later knockout round — get winners from previous round
+        const prevRound = getPreviousRound(knockoutRounds, round);
+        if (prevRound) {
+            qualified = await getWinnersFromRound({ guild, tournament, phase: prevRound });
+        } else {
+            qualified = getStandingsQualifiedTeams({ tournament, teams });
+        }
     }
 
     if (qualified.length < 2 || qualified.length % 2 !== 0) {
         return reply({
-            content: `❌ Invalid qualified team count for **${prettyPhase(round)}**: **${qualified.length}**.`
+            content: `❌ Invalid qualified team count for **${prettyPhase(round)}**: **${qualified.length}**.` +
+                (round !== knockoutRounds[0] ? '\nMake sure the previous round is fully played.' : '')
         });
     }
 
-    /* -- Pair up teams -- */
+    /* -- Pair up -- */
     const pairs = [];
     for (let i = 0; i < qualified.length; i += 2) {
         pairs.push([qualified[i], qualified[i + 1]]);
@@ -435,10 +469,122 @@ async function generateKnockout({ guild, tournament, teams, force, reply }) {
 }
 
 /* ====================================================
-   HELPERS
+   AUTO GROUP ASSIGNMENT
 ==================================================== */
 
-/** Normalize TournamentTeam documents into the shape fixtureBuilder expects. */
+/** Snake-draft teams into groups. Same logic as autofixtures. */
+async function autoAssignGroups(guildId, tournamentId, teams, groupCount) {
+    const groupKeys = Array.from(
+        { length: groupCount },
+        (_, i) => String.fromCharCode(65 + i)
+    );
+
+    const shuffled = [...teams].sort(() => Math.random() - 0.5);
+
+    let direction = 1;
+    let groupIndex = 0;
+
+    for (const team of shuffled) {
+        const groupKey = groupKeys[groupIndex];
+
+        await TournamentTeam.updateOne(
+            { _id: team._id },
+            { $set: { groupKey } }
+        );
+
+        groupIndex += direction;
+
+        if (groupIndex >= groupKeys.length) {
+            groupIndex = groupKeys.length - 1;
+            direction = -1;
+        } else if (groupIndex < 0) {
+            groupIndex = 0;
+            direction = 1;
+        }
+    }
+}
+
+/* ====================================================
+   ROUND RESOLUTION
+==================================================== */
+
+/**
+ * Figure out which knockout round to generate next.
+ * - If no knockout fixtures exist at all → first round
+ * - If a round is fully played and next round has no fixtures → next round
+ * - If all rounds done → null
+ */
+/**
+ * Resolve which round to actually generate RIGHT NOW.
+ * Checks which rounds already have fixtures, which are fully played.
+ */
+async function resolveNextKnockoutRound(guildId, tournament, knockoutRounds) {
+    const rounds = knockoutRounds.length > 0
+        ? [...knockoutRounds]
+        : deriveKnockoutRounds(
+            tournament.formatType === 'club_world_cup'
+                ? (tournament.super8QualificationSpots || 4)
+                : deriveQualifiedCount(tournament)
+        );
+
+    if (!rounds.length) return null;
+
+    for (const round of rounds) {
+        const existing = await Fixture.countDocuments({
+            guildId,
+            tournamentId: tournament._id,
+            phase: round
+        });
+
+        // No fixtures for this round yet → this is the one to generate
+        if (existing === 0) {
+            // But first check: is there a previous round that's not played yet?
+            const roundIndex = rounds.indexOf(round);
+            if (roundIndex > 0) {
+                const prevRound = rounds[roundIndex - 1];
+                const prevUnplayed = await Fixture.countDocuments({
+                    guildId,
+                    tournamentId: tournament._id,
+                    phase: prevRound,
+                    status: { $ne: 'Played' }
+                });
+                if (prevUnplayed > 0) {
+                    return null; // Previous round not done yet
+                }
+            }
+            return round;
+        }
+
+        // Fixtures exist — check if they're all played
+        const unplayed = await Fixture.countDocuments({
+            guildId,
+            tournamentId: tournament._id,
+            phase: round,
+            status: { $ne: 'Played' }
+        });
+
+        if (unplayed > 0) {
+            return null; // This round isn't done yet
+        }
+
+        // This round is fully played → continue to next round
+    }
+
+    return null; // All rounds done
+}
+
+/** Get the round before the given one in the knockout rounds array. */
+function getPreviousRound(knockoutRounds, currentRound) {
+    const idx = knockoutRounds.indexOf(currentRound);
+    if (idx <= 0) return null;
+    return knockoutRounds[idx - 1];
+}
+
+/* ====================================================
+   TEAM QUALIFICATION
+==================================================== */
+
+/** Normalize TournamentTeam docs for fixture builder. */
 function normalizeTournamentTeams(teams) {
     return teams.map(entry => ({
         tournamentTeamId: entry._id,
@@ -447,26 +593,7 @@ function normalizeTournamentTeams(teams) {
     }));
 }
 
-/** Determine the next knockout round from tournament config or derived from qualified teams. */
-function resolveNextKnockoutRound(tournament) {
-    const rounds = Array.isArray(tournament.knockoutRounds)
-        ? tournament.knockoutRounds
-        : [];
-
-    if (rounds.length > 0) return rounds[0];
-
-    // Fallback: derive from qualified team count
-    const qualifiedCount = deriveQualifiedCount(tournament);
-    const derived = deriveKnockoutRounds(qualifiedCount);
-    return derived[0] || 'semifinal';
-}
-
-/**
- * Derive the number of qualified teams from tournament settings.
- * For groups_knockout format: groupCount * qualificationSpotsPerGroup
- * For club_world_cup format: super8QualificationSpots (from Super 8 to semis)
- * Otherwise: teamCount or 4
- */
+/** Derive qualified team count from tournament settings. */
 function deriveQualifiedCount(tournament) {
     if (tournament.formatType === 'club_world_cup') {
         return tournament.super8QualificationSpots || 4;
@@ -477,100 +604,43 @@ function deriveQualifiedCount(tournament) {
     return tournament.teamCount || 4;
 }
 
-/**
- * Given the total number of qualified teams, return the
- * ordered array of knockout round phase strings.
- *
- * 2  -> ['final']
- * 4  -> ['semifinal', 'final']
- * 8  -> ['quarterfinal', 'semifinal', 'final']
- * 16 -> ['roundof16', 'quarterfinal', 'semifinal', 'final']
- */
+/** Derive knockout rounds from qualified team count. */
 function deriveKnockoutRounds(qualifiedTeamCount) {
     const ALL_ROUNDS = ['roundof16', 'quarterfinal', 'semifinal', 'final'];
     const total = Math.max(2, qualifiedTeamCount);
-
-    const roundCount = Math.log2(total);
-    const roundedCount = Math.ceil(roundCount);
-
+    const roundedCount = Math.ceil(Math.log2(total));
     return ALL_ROUNDS.slice(ALL_ROUNDS.length - roundedCount);
 }
 
-/** Get qualified teams sorted by standings (points -> GD -> GF), with cross-group seeding. */
-async function getQualifiedTeams({ tournament, teams }) {
-    const groupKeys = [...new Set(teams.map(t => t.groupKey).filter(Boolean))].sort();
-    const spotsPerGroup = tournament.qualificationSpotsPerGroup || 2;
-
-    // If there are groups, qualify top N from each group with proper seeding
-    if (groupKeys.length > 0) {
-        return crossGroupSeed({ teams, groupKeys, spotsPerGroup });
-    }
-
-    // Fallback: flat standings -- take top N overall
-    const sorted = [...teams].sort((a, b) => {
+/** Sort teams by standings: points desc, GD desc, GF desc. */
+function sortByStandings(teams) {
+    return [...teams].sort((a, b) => {
         const as = a.stats || {};
         const bs = b.stats || {};
-
         if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
-
         const agd = (as.gf || 0) - (as.ga || 0);
         const bgd = (bs.gf || 0) - (bs.ga || 0);
         if (bgd !== agd) return bgd - agd;
-
         return (bs.gf || 0) - (as.gf || 0);
     });
-
-    const target = deriveQualifiedCount(tournament);
-
-    return sorted.slice(0, target).map(entry => ({
-        tournamentTeamId: entry._id,
-        teamId: entry.teamId?._id || entry.teamId,
-        name: entry.teamId?.name || entry.teamNameSnapshot
-    }));
 }
 
-/**
- * Get qualified teams from group stage for Club World Cup format.
- * Top N from each group (default 2), returned as flat list.
- * No cross-seeding needed since Super 8 is round-robin, not knockout.
- */
+/** Get qualified teams from group standings (for Super 8 entry). */
 function getGroupQualifiedTeams({ tournament, teams }) {
     const groupKeys = [...new Set(teams.map(t => t.groupKey).filter(Boolean))].sort();
     const spotsPerGroup = tournament.qualificationSpotsPerGroup || 2;
 
     if (groupKeys.length === 0) {
-        // No groups assigned yet -- return all teams sorted by stats
-        const sorted = [...teams].sort((a, b) => {
-            const as = a.stats || {};
-            const bs = b.stats || {};
-            if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
-            const agd = (as.gf || 0) - (as.ga || 0);
-            const bgd = (bs.gf || 0) - (bs.ga || 0);
-            if (bgd !== agd) return bgd - agd;
-            return (bs.gf || 0) - (as.gf || 0);
-        });
-
-        return sorted.slice(0, 8).map(entry => ({
-            tournamentTeamId: entry._id,
-            teamId: entry.teamId?._id || entry.teamId,
-            name: entry.teamId?.name || entry.teamNameSnapshot
-        }));
+        return normalizeTournamentTeams(
+            sortByStandings(teams).slice(0, 8)
+        );
     }
 
     const qualified = [];
     for (const groupKey of groupKeys) {
-        const groupTeams = [...teams]
-            .filter(t => t.groupKey === groupKey)
-            .sort((a, b) => {
-                const as = a.stats || {};
-                const bs = b.stats || {};
-                if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
-                const agd = (as.gf || 0) - (as.ga || 0);
-                const bgd = (bs.gf || 0) - (bs.ga || 0);
-                if (bgd !== agd) return bgd - agd;
-                return (bs.gf || 0) - (as.gf || 0);
-            })
-            .slice(0, spotsPerGroup);
+        const groupTeams = sortByStandings(
+            teams.filter(t => t.groupKey === groupKey)
+        ).slice(0, spotsPerGroup);
 
         for (const entry of groupTeams) {
             qualified.push({
@@ -584,63 +654,122 @@ function getGroupQualifiedTeams({ tournament, teams }) {
     return qualified;
 }
 
-/**
- * Get top N from Super 8 standings for Club World Cup semifinals.
- * Sorted by points -> GD -> GF. Matchups: 1st vs 4th, 2nd vs 3rd.
- */
+/** Get top N from Super 8 for Club World Cup semis. 1v4, 2v3. */
 function getSuper8QualifiedTeams({ tournament, teams }) {
     const spots = tournament.super8QualificationSpots || 4;
+    const sorted = sortByStandings(teams);
+    const topN = normalizeTournamentTeams(sorted.slice(0, spots));
 
-    // Super 8 is a single table -- sort by standings
-    const sorted = [...teams].sort((a, b) => {
-        const as = a.stats || {};
-        const bs = b.stats || {};
-        if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
-        const agd = (as.gf || 0) - (as.ga || 0);
-        const bgd = (bs.gf || 0) - (bs.ga || 0);
-        if (bgd !== agd) return bgd - agd;
-        return (bs.gf || 0) - (as.gf || 0);
-    });
-
-    const topN = sorted.slice(0, spots).map(entry => ({
-        tournamentTeamId: entry._id,
-        teamId: entry.teamId?._id || entry.teamId,
-        name: entry.teamId?.name || entry.teamNameSnapshot
-    }));
-
-    // Pair: 1st vs 4th, 2nd vs 3rd
     if (topN.length === 4) {
         return [topN[0], topN[3], topN[1], topN[2]];
     }
 
-    // Fallback for other counts: just pair sequentially
     return topN;
 }
 
+/** Get qualified teams from flat standings (for groups_knockout first round). */
+function getStandingsQualifiedTeams({ tournament, teams }) {
+    const groupKeys = [...new Set(teams.map(t => t.groupKey).filter(Boolean))].sort();
+    const spotsPerGroup = tournament.qualificationSpotsPerGroup || 2;
+
+    if (groupKeys.length > 0) {
+        return crossGroupSeed({ teams, groupKeys, spotsPerGroup });
+    }
+
+    const target = deriveQualifiedCount(tournament);
+    return normalizeTournamentTeams(sortByStandings(teams).slice(0, target));
+}
+
+/** Get winners from a completed knockout round. */
+async function getWinnersFromRound({ guild, tournament, phase }) {
+    const fixtures = await Fixture.find({
+        guildId: guild.id,
+        tournamentId: tournament._id,
+        phase,
+        status: 'Played'
+    }).sort({ matchNumber: 1 });
+
+    const winners = [];
+
+    for (const fixture of fixtures) {
+        const winner = determineFixtureWinner(fixture);
+        if (!winner) continue;
+
+        const entry = await TournamentTeam.findOne({
+            _id: winner.tournamentTeamId,
+            guildId: guild.id,
+            tournamentId: tournament._id
+        }).populate('teamId');
+
+        if (entry?.teamId) {
+            winners.push({
+                tournamentTeamId: entry._id,
+                teamId: entry.teamId._id,
+                name: entry.teamId.name || entry.teamNameSnapshot
+            });
+        }
+    }
+
+    return winners;
+}
+
+/** Determine winner of a played fixture. Returns { tournamentTeamId, teamId } or null. */
+function determineFixtureWinner(fixture) {
+    const result = fixture.result || {};
+
+    // Explicit winner field
+    if (result.winner) {
+        const winnerName = result.winner.trim().toLowerCase();
+        if (fixture.homeTeam?.trim().toLowerCase() === winnerName) {
+            return { tournamentTeamId: fixture.homeTournamentTeamId, teamId: fixture.homeTeamId };
+        }
+        if (fixture.awayTeam?.trim().toLowerCase() === winnerName) {
+            return { tournamentTeamId: fixture.awayTournamentTeamId, teamId: fixture.awayTeamId };
+        }
+    }
+
+    const homeGoals = Number(result.home ?? 0);
+    const awayGoals = Number(result.away ?? 0);
+
+    if (homeGoals > awayGoals) {
+        return { tournamentTeamId: fixture.homeTournamentTeamId, teamId: fixture.homeTeamId };
+    }
+    if (awayGoals > homeGoals) {
+        return { tournamentTeamId: fixture.awayTournamentTeamId, teamId: fixture.awayTeamId };
+    }
+
+    // Check penalties
+    const homePens = result.penaltiesHome;
+    const awayPens = result.penaltiesAway;
+
+    if (homePens != null && awayPens != null) {
+        if (homePens > awayPens) {
+            return { tournamentTeamId: fixture.homeTournamentTeamId, teamId: fixture.homeTeamId };
+        }
+        if (awayPens > homePens) {
+            return { tournamentTeamId: fixture.awayTournamentTeamId, teamId: fixture.awayTeamId };
+        }
+    }
+
+    return null;
+}
+
 /**
- * Cross-group seeding: sort within each group, then interleave
- * so teams from the same group meet as late as possible.
+ * Cross-group seeding for knockout brackets.
+ * Sorts within each group, then interleaves so same-group teams meet late.
  */
 function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
     const groups = {};
     for (const key of groupKeys) {
-        groups[key] = teams
-            .filter(t => t.groupKey === key)
-            .sort((a, b) => {
-                const as = a.stats || {};
-                const bs = b.stats || {};
-                if ((bs.points || 0) !== (as.points || 0)) return (bs.points || 0) - (as.points || 0);
-                const agd = (as.gf || 0) - (as.ga || 0);
-                const bgd = (bs.gf || 0) - (bs.ga || 0);
-                if (bgd !== agd) return bgd - agd;
-                return (bs.gf || 0) - (as.gf || 0);
-            })
-            .slice(0, spotsPerGroup)
-            .map(entry => ({
-                tournamentTeamId: entry._id,
-                teamId: entry.teamId?._id || entry.teamId,
-                name: entry.teamId?.name || entry.teamNameSnapshot
-            }));
+        groups[key] = sortByStandings(
+            teams.filter(t => t.groupKey === key)
+        ).slice(0, spotsPerGroup);
+
+        groups[key] = groups[key].map(entry => ({
+            tournamentTeamId: entry._id,
+            teamId: entry.teamId?._id || entry.teamId,
+            name: entry.teamId?.name || entry.teamNameSnapshot
+        }));
     }
 
     if (groupKeys.length === 1) {
@@ -672,7 +801,11 @@ function crossGroupSeed({ teams, groupKeys, spotsPerGroup }) {
     return bracket;
 }
 
-/** Fisher-Yates shuffle in place. */
+/* ====================================================
+   UTILITIES
+==================================================== */
+
+/** Fisher-Yates shuffle. */
 function shuffleArray(arr) {
     for (let i = arr.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -681,15 +814,15 @@ function shuffleArray(arr) {
     return arr;
 }
 
-/** Build a success embed for fixture generation. */
-function successReply(reply, tournament, title, count) {
+/** Build success embed. */
+function successReply(reply, tournament, title, count, extra = '') {
     const embed = new EmbedBuilder()
         .setColor(0x2ECC71)
         .setTitle(title)
         .setDescription(
-            `${tournament.emoji || ''} Tournament: **${tournament.name}**\n` +
+            `${tournament.emoji || ''} **${tournament.name}**\n` +
             `Key: \`${tournament.tournamentKey}\`\n\n` +
-            `Created fixtures: **${count}**`
+            `Created fixtures: **${count}**${extra}`
         )
         .setTimestamp();
 
