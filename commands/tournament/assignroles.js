@@ -129,7 +129,7 @@ async function runAssignRoles({ guild, key, reply }) {
                     .setColor(0xE74C3C)
                     .setTitle('❌ No Roles Configured')
                     .setDescription(
-                        `Neither captain nor player role is set for **${tournament.tournamentName}**.\n` +
+                        `Neither captain nor player role is set for **${tournament.name}**.\n` +
                         'Use `/settournament` to set `captainRole` and `playerRole` first.'
                     )
             ]
@@ -149,7 +149,7 @@ async function runAssignRoles({ guild, key, reply }) {
                 new EmbedBuilder()
                     .setColor(0xF1C40F)
                     .setTitle('⚠️ No Players Found')
-                    .setDescription(`No active players in **${tournament.tournamentName}**.`)
+                    .setDescription(`No active players in **${tournament.name}**.`)
             ]
         });
     }
@@ -348,7 +348,7 @@ async function runAssignRoles({ guild, key, reply }) {
 
     const embed = new EmbedBuilder()
         .setColor(totalFailed > 0 ? 0xF1C40F : 0x2ECC71)
-        .setTitle(`🎭 Role Assignment — ${tournament.tournamentName}`)
+        .setTitle(`🎭 Role Assignment — ${tournament.name}`)
         .setDescription(
             `Processed **${tournamentPlayers.length}** tournament players.\n` +
             `Captains: **${captainIds.size}** | Players: **${playerIds.size}**`
