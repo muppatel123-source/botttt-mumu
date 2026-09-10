@@ -484,7 +484,7 @@ async function processEventStats({ client, guild, event, rawData, countPlayed, o
 
         if (countPlayed) inc['stats.played'] = 1;
 
-        // Upsert EventPlayer
+        // Upsert EventPlayer - avoid conflict: same field in $setOnInsert and $set
         await EventPlayer.findOneAndUpdate(
             { guildId: guild.id, eventId: event._id, playerId: player._id },
             {
@@ -492,7 +492,6 @@ async function processEventStats({ client, guild, event, rawData, countPlayed, o
                     guildId: guild.id,
                     eventId: event._id,
                     playerId: player._id,
-                    playerNameSnapshot: player.name,
                     isActive: true
                 },
                 $set: { playerNameSnapshot: player.name },
