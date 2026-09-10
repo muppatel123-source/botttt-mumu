@@ -2,10 +2,13 @@
  * mystats.js
  *
  * View player stats with interactive views:
- * - Tournament Stats (per-tournament)
+ * - Tournament / Event Stats (per-competition)
  * - All-Time Stats (career totals from UserProfile)
  * - Trophies (all trophies won)
  * - Awards (special awards like Ballon d'Or, Golden Boot, etc.)
+ *
+ * Supports both Tournaments and Freestyle Events (UCL etc)
+ * Dropdown shows [TOURN] and [EVENT] labels.
  *
  * Usage:  .mystats [@user/userId]
  * Slash:  /mystats [user]
@@ -25,6 +28,8 @@ const {
 const {
     Player,
     TournamentPlayer,
+    EventPlayer,
+    EventSettings,
     UserProfile,
     ServerConfig,
     TournamentSettings
@@ -35,6 +40,11 @@ const {
     getSelectableTournaments,
     getTournamentByKey
 } = require('../../utils/getTournament');
+
+const {
+    getSelectableEvents,
+    getEventByKey
+} = require('../../utils/getEvent');
 
 const { getUserFromArgs } = require('../../utils/stringHelpers');
 const { truncate, parseColor } = require('../../utils/displayHelpers');
@@ -118,24 +128,111 @@ module.exports = {
    TARGET RESOLUTION (PREFIX)
 ==================================================== */
 
-/**
- * Resolve the target user from prefix args.
- * Supports @mention, raw Discord ID, and Discord username lookup.
- * Falls back to message.author if no target specified.
- */
 async function resolvePrefixTarget(message, args = []) {
-    /* ── Try @mention ── */
     const mentionedUser = message.mentions.users.first();
     if (mentionedUser) return mentionedUser;
 
-    /* ── Try getUserFromArgs (ID + username) ── */
     if (args.length) {
         const resolved = await getUserFromArgs(message, args);
         if (resolved) return resolved;
     }
 
-    /* ── Fallback: self ── */
     return null;
+}
+
+/* ====================================================
+   COMPETITION HELPERS
+==================================================== */
+
+async function getAllCompetitions(guildId) {
+    const [tournaments, events] = await Promise.all([
+        getSelectableTournaments(guildId, { includeCompleted: true }),
+        getSelectableEvents(guildId)
+    ]);
+
+    const competitions = [];
+
+    for (const t of tournaments) {
+        competitions.push({
+            type: 'tournament',
+            key: t.tournamentKey,
+            name: t.name || t.tournamentKey,
+            doc: t,
+            value: `tournament:${t.tournamentKey}`,
+            label: `[TOURN] ${truncate(t.name || t.tournamentKey, 70)}`,
+            description: `Key: ${t.tournamentKey}`,
+            emoji: t.emoji || '🏆',
+            createdAt: t.createdAt
+        });
+    }
+
+    for (const e of events) {
+        const closed = e.isActive === false;
+        competitions.push({
+            type: 'event',
+            key: e.eventKey,
+            name: e.name || e.eventKey,
+            doc: e,
+            value: `event:${e.eventKey}`,
+            label: `${closed ? '[CLOSED EVENT]' : '[EVENT]'} ${truncate(e.name || e.eventKey, 65)}`,
+            description: `Key: ${e.eventKey} | ${closed ? 'CLOSED' : e.channelId ? 'bound' : 'unbound'} | ${e.isActive ? 'active' : 'closed'}`,
+            emoji: e.emoji || '🏆',
+            createdAt: e.createdAt
+        });
+    }
+
+    // Sort: tournaments first? Actually sort by createdAt desc but keep grouping? We'll sort by type then createdAt
+    // For simplicity, sort by createdAt desc overall
+    competitions.sort((a, b) => {
+        // Events and tournaments mixed, newest first
+        const da = new Date(a.createdAt || 0).getTime();
+        const db = new Date(b.createdAt || 0).getTime();
+        return db - da;
+    });
+
+    return competitions;
+}
+
+function parseCompetitionValue(value) {
+    if (!value) return null;
+    const idx = value.indexOf(':');
+    if (idx === -1) {
+        // Legacy: assume tournament
+        return { type: 'tournament', key: value };
+    }
+    const type = value.slice(0, idx);
+    const key = value.slice(idx + 1);
+    if (!['tournament', 'event'].includes(type)) {
+        return { type: 'tournament', key: value };
+    }
+    return { type, key };
+}
+
+async function getCompetitionByValue(guildId, value) {
+    const parsed = parseCompetitionValue(value);
+    if (!parsed) return null;
+
+    if (parsed.type === 'event') {
+        const ev = await getEventByKey(guildId, parsed.key);
+        if (!ev) return null;
+        return {
+            type: 'event',
+            key: ev.eventKey,
+            name: ev.name,
+            doc: ev,
+            value: `event:${ev.eventKey}`
+        };
+    } else {
+        const t = await getTournamentByKey(guildId, parsed.key, { includeCompleted: true });
+        if (!t) return null;
+        return {
+            type: 'tournament',
+            key: t.tournamentKey,
+            name: t.name,
+            doc: t,
+            value: `tournament:${t.tournamentKey}`
+        };
+    }
 }
 
 /* ====================================================
@@ -152,21 +249,43 @@ async function runMyStats({ guild, targetUserId, fallbackTag, fallbackAvatar, vi
         return reply({ content: '❌ No player profile found.' });
     }
 
-    const tournaments = await getSelectableTournaments(guild.id, { includeCompleted: true });
-    if (!tournaments.length) {
-        return reply({ content: '❌ No tournaments found.' });
+    const competitions = await getAllCompetitions(guild.id);
+
+    if (!competitions.length) {
+        return reply({ content: '❌ No tournaments or events found.' });
     }
 
-    let tournament = await getDefaultTournament(guild.id, { includeCompleted: true });
-    if (!tournament) tournament = tournaments[0];
+    // Determine default selection: default tournament > first tournament > first event
+    let selectedCompetition = null;
+
+    const defaultTournament = await getDefaultTournament(guild.id, { includeCompleted: true });
+    if (defaultTournament) {
+        selectedCompetition = {
+            type: 'tournament',
+            key: defaultTournament.tournamentKey,
+            name: defaultTournament.name,
+            doc: defaultTournament,
+            value: `tournament:${defaultTournament.tournamentKey}`
+        };
+    } else {
+        // Pick first competition
+        const first = competitions[0];
+        selectedCompetition = {
+            type: first.type,
+            key: first.key,
+            name: first.name,
+            doc: first.doc,
+            value: first.value
+        };
+    }
 
     let view = 'tournament';
 
     const payload = await buildPayload({
         guild,
         globalPlayer,
-        tournament,
-        tournaments,
+        selectedCompetition,
+        competitions,
         view,
         fallbackTag,
         fallbackAvatar
@@ -185,13 +304,8 @@ async function runMyStats({ guild, targetUserId, fallbackTag, fallbackAvatar, vi
             }
 
             if (interaction.isStringSelectMenu() && interaction.customId === 'mystats_tournament') {
-                const selectedTournament = await getTournamentByKey(
-                    guild.id,
-                    interaction.values[0],
-                    { includeCompleted: true }
-                );
-
-                if (selectedTournament) tournament = selectedTournament;
+                const newComp = await getCompetitionByValue(guild.id, interaction.values[0]);
+                if (newComp) selectedCompetition = newComp;
                 view = 'tournament';
             }
 
@@ -205,8 +319,8 @@ async function runMyStats({ guild, targetUserId, fallbackTag, fallbackAvatar, vi
             const updatedPayload = await buildPayload({
                 guild,
                 globalPlayer,
-                tournament,
-                tournaments,
+                selectedCompetition,
+                competitions,
                 view,
                 fallbackTag,
                 fallbackAvatar
@@ -231,28 +345,23 @@ async function runMyStats({ guild, targetUserId, fallbackTag, fallbackAvatar, vi
    PAYLOAD BUILDER
 ==================================================== */
 
-async function buildPayload({ guild, globalPlayer, tournament, tournaments, view, fallbackTag, fallbackAvatar }) {
+async function buildPayload({ guild, globalPlayer, selectedCompetition, competitions, view, fallbackTag, fallbackAvatar }) {
     const config = await ServerConfig.findOne({ guildId: guild.id }).lean();
 
-    // ── Per-guild profile (allTimeStats) ──
     const profile = await UserProfile.findOne({
         guildId: guild.id,
         discordID: globalPlayer.discordID
     }).lean();
 
-    // ── Global trophies & awards (all servers) ──
     const globalProfiles = await UserProfile.find({
         discordID: globalPlayer.discordID
     }).lean();
 
     const globalTrophies = [];
     const globalAwards = [];
-
-    // Build guild name map for cross-server labels
     const guildNameMap = new Map();
 
     for (const gp of globalProfiles) {
-        // Resolve server name from client cache
         if (gp.guildId && !guildNameMap.has(gp.guildId)) {
             const g = guild.client.guilds.cache.get(gp.guildId);
             guildNameMap.set(gp.guildId, g?.name || 'Unknown Server');
@@ -272,15 +381,28 @@ async function buildPayload({ guild, globalPlayer, tournament, tournaments, view
         }
     }
 
-    const tournamentPlayer = await TournamentPlayer.findOne({
-        guildId: guild.id,
-        tournamentId: tournament._id,
-        playerId: globalPlayer._id,
-        isActive: true
-    }).lean();
+    let tournamentPlayer = null;
+    let eventPlayer = null;
+
+    if (selectedCompetition?.type === 'tournament') {
+        tournamentPlayer = await TournamentPlayer.findOne({
+            guildId: guild.id,
+            tournamentId: selectedCompetition.doc._id,
+            playerId: globalPlayer._id,
+            isActive: true
+        }).lean();
+    } else if (selectedCompetition?.type === 'event') {
+        eventPlayer = await EventPlayer.findOne({
+            guildId: guild.id,
+            eventId: selectedCompetition.doc._id,
+            playerId: globalPlayer._id,
+            isActive: true
+        }).lean();
+    }
 
     const emojis = getEmojiPack(config);
     const tournamentEmojiMap = await getTournamentEmojiMap(guild.id);
+    const eventEmojiMap = await getEventEmojiMap(guild.id);
 
     const embed =
         view === 'alltime'
@@ -289,12 +411,14 @@ async function buildPayload({ guild, globalPlayer, tournament, tournaments, view
                 ? buildTrophiesEmbed({ guild, globalPlayer, profile, emojis, tournamentEmojiMap, fallbackTag, fallbackAvatar, globalTrophies, guildNameMap })
                 : view === 'awards'
                     ? buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, fallbackAvatar, globalAwards, guildNameMap })
-                    : buildTournamentEmbed({ guild, globalPlayer, tournament, tournamentPlayer, emojis, fallbackTag, fallbackAvatar });
+                    : selectedCompetition?.type === 'event'
+                        ? buildEventEmbed({ guild, globalPlayer, event: selectedCompetition.doc, eventPlayer, emojis, fallbackTag, fallbackAvatar })
+                        : buildTournamentEmbed({ guild, globalPlayer, tournament: selectedCompetition.doc, tournamentPlayer, emojis, fallbackTag, fallbackAvatar });
 
     return {
         embeds: [embed],
         components: [
-            buildTournamentDropdown(tournaments, tournament.tournamentKey),
+            buildCompetitionDropdown(competitions, selectedCompetition?.value),
             buildButtons(view)
         ]
     };
@@ -343,6 +467,51 @@ function buildTournamentEmbed({ guild, globalPlayer, tournament, tournamentPlaye
             { name: `${emojis.stats.ga} G+A`, value: `\`${contributions}\``, inline: true }
         )
         .setFooter({ text: fallbackTag })
+        .setTimestamp();
+}
+
+function buildEventEmbed({ guild, globalPlayer, event, eventPlayer, emojis, fallbackTag, fallbackAvatar }) {
+    const stats = eventPlayer?.stats || {};
+    const contributions = (stats.goals || 0) + (stats.assists || 0);
+    const eventEmoji = event.emoji || '🏆';
+    const channelInfo = event.channelId ? `<#${event.channelId}>` : '`not bound`';
+    const closed = event.isActive === false;
+    const statusLine = closed ? '🔴 CLOSED — stats kept, no new updates' : event.channelId ? '🟢 ACTIVE' : '🟡 UNBOUND';
+
+    return new EmbedBuilder()
+        .setColor(closed ? 0x95A5A6 : 0x9B59B6)
+        .setAuthor({
+            name: `${event.name} — Event Stats ${closed ? '[CLOSED]' : ''}`,
+            iconURL: guild.iconURL() || fallbackAvatar
+        })
+        .setTitle(`🎮 EVENT CARD: ${globalPlayer.name.toUpperCase()}`)
+        .setDescription(
+            `${eventEmoji} Event: **${event.name}**\n` +
+            `Key: \`${event.eventKey}\`\n` +
+            `Status: ${statusLine}\n` +
+            `Channel: ${channelInfo}\n` +
+            `Type: \`${closed ? '[CLOSED EVENT]' : '[EVENT]'}\``
+        )
+        .setThumbnail(fallbackAvatar || guild.iconURL())
+        .addFields(
+            {
+                name: '👤 Player Info',
+                value:
+                    `User: <@${globalPlayer.discordID}>\n` +
+                    `Event: **${event.name}**\n` +
+                    `Tracked: **${eventPlayer ? 'Yes' : 'No stats yet'}**`,
+                inline: false
+            },
+            { name: `${emojis.stats.played} Matches Played`, value: `\`${stats.played || 0}\``, inline: false },
+            { name: `${emojis.stats.mvps} MVPs`, value: `\`${stats.mvps || 0}\``, inline: true },
+            { name: `${emojis.stats.goals} Goals`, value: `\`${stats.goals || 0}\``, inline: true },
+            { name: `${emojis.stats.assists} Assists`, value: `\`${stats.assists || 0}\``, inline: true },
+            { name: `${emojis.stats.saves} Saves`, value: `\`${stats.saves || 0}\``, inline: true },
+            { name: `${emojis.stats.tackles} Tackles`, value: `\`${stats.tackles || 0}\``, inline: true },
+            { name: `${emojis.stats.interceptions} Interceptions`, value: `\`${stats.interceptions || 0}\``, inline: true },
+            { name: `${emojis.stats.ga} G+A`, value: `\`${contributions}\``, inline: true }
+        )
+        .setFooter({ text: `${fallbackTag} • [EVENT] ${event.eventKey}` })
         .setTimestamp();
 }
 
@@ -410,19 +579,31 @@ function buildAwardsEmbed({ guild, globalPlayer, profile, emojis, fallbackTag, f
    UI COMPONENTS
 ==================================================== */
 
-function buildTournamentDropdown(tournaments, selectedKey) {
+function buildCompetitionDropdown(competitions, selectedValue) {
+    // Discord limits 25 options
+    const options = competitions.slice(0, 25).map(comp => ({
+        label: truncate(comp.label, 100),
+        description: truncate(comp.description, 100),
+        value: comp.value,
+        default: comp.value === selectedValue,
+        emoji: comp.emoji && comp.emoji.length < 10 ? comp.emoji : undefined
+    }));
+
+    // Ensure at least one option
+    if (!options.length) {
+        options.push({
+            label: 'No competitions',
+            description: 'No tournaments or events',
+            value: 'tournament:none',
+            default: true
+        });
+    }
+
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId('mystats_tournament')
-            .setPlaceholder('Select tournament')
-            .addOptions(
-                tournaments.slice(0, 25).map(tournament => ({
-                    label: truncate(tournament.name || tournament.tournamentKey, 80),
-                    description: `Key: ${tournament.tournamentKey}`,
-                    value: tournament.tournamentKey,
-                    default: tournament.tournamentKey === selectedKey
-                }))
-            )
+            .setPlaceholder('Select tournament / event')
+            .addOptions(options)
     );
 }
 
@@ -430,7 +611,7 @@ function buildButtons(view) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('mystats_tournament_view')
-            .setLabel('Tournament Stats')
+            .setLabel('Competition Stats')
             .setStyle(view === 'tournament' ? ButtonStyle.Success : ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId('mystats_alltime')
@@ -496,15 +677,25 @@ async function getTournamentEmojiMap(guildId) {
     return map;
 }
 
+async function getEventEmojiMap(guildId) {
+    const events = await EventSettings.find({ guildId })
+        .select('eventKey emoji')
+        .lean()
+        .catch(() => []);
+
+    const map = new Map();
+    for (const ev of events) {
+        if (ev.eventKey && ev.emoji) {
+            map.set(ev.eventKey, ev.emoji);
+        }
+    }
+    return map;
+}
+
 /* ====================================================
    TROPHY & AWARD FORMATTING
 ==================================================== */
 
-/**
- * Build a server label for cross-server trophies/awards.
- * Returns empty string for same-server items.
- * Returns " — ServerName" for different-server items.
- */
 function buildServerLabel(sourceGuildId, currentGuildId, guildNameMap) {
     if (!sourceGuildId || sourceGuildId === currentGuildId) return '';
 
