@@ -1,8 +1,9 @@
 /**
  * topstats.js
  *
- * View tournament leaderboards for player stats.
- * Paginated with category and tournament dropdown selectors.
+ * View tournament + event leaderboards for player stats.
+ * Paginated with category and competition dropdown selectors.
+ * Supports both Tournaments and Freestyle Events (UCL etc)
  *
  * Usage:  .topstats [category]
  * Slash:  /topstats category:<value>
@@ -21,7 +22,8 @@ const {
 } = require('discord.js');
 
 const {
-    TournamentPlayer
+    TournamentPlayer,
+    EventPlayer
 } = require('../../models/Tournament');
 
 const {
@@ -29,6 +31,12 @@ const {
     getSelectableTournaments,
     getTournamentByKey
 } = require('../../utils/getTournament');
+
+const {
+    getSelectableEvents,
+    getEventByKey,
+    getEventByChannel
+} = require('../../utils/getEvent');
 
 const PAGE_SIZE = 10;
 
@@ -43,7 +51,7 @@ const CATEGORIES = {
 
 module.exports = {
     name: 'topstats',
-    description: 'View tournament leaderboards for player stats.',
+    description: 'View tournament + event leaderboards for player stats.',
     usage: '.topstats [category]',
     aliases: ['top-stats', 'leaderstats', 'statleaders', 'lb'],
     hidden: false,
@@ -52,7 +60,7 @@ module.exports = {
 
     data: new SlashCommandBuilder()
         .setName('topstats')
-        .setDescription('View tournament leaderboards')
+        .setDescription('View tournament + event leaderboards')
         .addStringOption(opt =>
             opt.setName('category')
                 .setDescription('Stat category')
@@ -79,6 +87,7 @@ module.exports = {
                 guild: message.guild,
                 category,
                 userId: message.author.id,
+                channelId: message.channel.id,
                 reply: payload => message.reply(payload)
             });
         } catch (error) {
@@ -101,6 +110,7 @@ module.exports = {
                 guild: interaction.guild,
                 category,
                 userId: interaction.user.id,
+                channelId: interaction.channel.id,
                 reply: payload => interaction.editReply(payload)
             });
         } catch (error) {
@@ -119,6 +129,93 @@ module.exports = {
 };
 
 /* ====================================================
+   COMPETITION HELPERS
+==================================================== */
+
+async function getAllCompetitions(guildId) {
+    const [tournaments, events] = await Promise.all([
+        getSelectableTournaments(guildId),
+        getSelectableEvents(guildId)
+    ]);
+
+    const competitions = [];
+
+    for (const t of tournaments) {
+        competitions.push({
+            type: 'tournament',
+            key: t.tournamentKey,
+            name: t.name || t.tournamentKey,
+            doc: t,
+            value: `tournament:${t.tournamentKey}`,
+            label: `[TOURN] ${truncate(t.name || t.tournamentKey, 70)}`,
+            description: `Key: ${t.tournamentKey}`,
+            emoji: t.emoji || '🏆',
+            createdAt: t.createdAt
+        });
+    }
+
+    for (const e of events) {
+        const closed = e.isActive === false;
+        competitions.push({
+            type: 'event',
+            key: e.eventKey,
+            name: e.name || e.eventKey,
+            doc: e,
+            value: `event:${e.eventKey}`,
+            label: `${closed ? '[CLOSED EVENT]' : '[EVENT]'} ${truncate(e.name || e.eventKey, 65)}`,
+            description: `Key: ${e.eventKey} | ${closed ? 'CLOSED' : 'active'}`,
+            emoji: e.emoji || '🏆',
+            createdAt: e.createdAt
+        });
+    }
+
+    competitions.sort((a, b) => {
+        const da = new Date(a.createdAt || 0).getTime();
+        const db = new Date(b.createdAt || 0).getTime();
+        return db - da;
+    });
+
+    return competitions;
+}
+
+function parseCompetitionValue(value) {
+    if (!value) return null;
+    const idx = value.indexOf(':');
+    if (idx === -1) return { type: 'tournament', key: value };
+    const type = value.slice(0, idx);
+    const key = value.slice(idx + 1);
+    if (!['tournament', 'event'].includes(type)) return { type: 'tournament', key: value };
+    return { type, key };
+}
+
+async function getCompetitionByValue(guildId, value) {
+    const parsed = parseCompetitionValue(value);
+    if (!parsed) return null;
+
+    if (parsed.type === 'event') {
+        const ev = await getEventByKey(guildId, parsed.key);
+        if (!ev) return null;
+        return {
+            type: 'event',
+            key: ev.eventKey,
+            name: ev.name,
+            doc: ev,
+            value: `event:${ev.eventKey}`
+        };
+    } else {
+        const t = await getTournamentByKey(guildId, parsed.key);
+        if (!t) return null;
+        return {
+            type: 'tournament',
+            key: t.tournamentKey,
+            name: t.name,
+            doc: t,
+            value: `tournament:${t.tournamentKey}`
+        };
+    }
+}
+
+/* ====================================================
    CORE LOGIC
 ==================================================== */
 
@@ -126,6 +223,7 @@ async function runTopStats({
     guild,
     category,
     userId,
+    channelId,
     reply
 }) {
     if (!guild) {
@@ -136,26 +234,54 @@ async function runTopStats({
         return reply({ content: '❌ Invalid category.' });
     }
 
-    const tournaments = await getSelectableTournaments(guild.id);
+    const competitions = await getAllCompetitions(guild.id);
 
-    if (!tournaments.length) {
-        return reply({ content: '📭 No active tournaments found.' });
+    if (!competitions.length) {
+        return reply({ content: '📭 No tournaments or events found.' });
     }
 
-    let tournament = await getDefaultTournament(guild.id);
+    // Determine default competition
+    // Priority: channel-bound event > default tournament > first competition
+    let selectedCompetition = null;
 
-    if (!tournament) {
-        tournament = tournaments[0];
+    const eventByChannel = await getEventByChannel(guild.id, channelId).catch(() => null);
+    if (eventByChannel) {
+        selectedCompetition = {
+            type: 'event',
+            key: eventByChannel.eventKey,
+            name: eventByChannel.name,
+            doc: eventByChannel,
+            value: `event:${eventByChannel.eventKey}`
+        };
+    } else {
+        const defaultTournament = await getDefaultTournament(guild.id);
+        if (defaultTournament) {
+            selectedCompetition = {
+                type: 'tournament',
+                key: defaultTournament.tournamentKey,
+                name: defaultTournament.name,
+                doc: defaultTournament,
+                value: `tournament:${defaultTournament.tournamentKey}`
+            };
+        } else {
+            const first = competitions[0];
+            selectedCompetition = {
+                type: first.type,
+                key: first.key,
+                name: first.name,
+                doc: first.doc,
+                value: first.value
+            };
+        }
     }
 
-    let selectedTournamentKey = tournament.tournamentKey;
     let selectedCategory = category;
     let page = 0;
 
     const payload = await buildTopStatsPayload({
         guildId: guild.id,
-        tournament,
-        tournaments,
+        competition: selectedCompetition,
+        competitions,
         category: selectedCategory,
         page
     });
@@ -189,16 +315,16 @@ async function runTopStats({
                 }
 
                 if (interaction.customId === 'topstats_tournament') {
-                    selectedTournamentKey = interaction.values[0];
-                    tournament = await getTournamentByKey(guild.id, selectedTournamentKey);
+                    const comp = await getCompetitionByValue(guild.id, interaction.values[0]);
+                    if (comp) selectedCompetition = comp;
                     page = 0;
                 }
             }
 
             const updatedPayload = await buildTopStatsPayload({
                 guildId: guild.id,
-                tournament,
-                tournaments,
+                competition: selectedCompetition,
+                competitions,
                 category: selectedCategory,
                 page
             });
@@ -231,25 +357,43 @@ async function runTopStats({
 
 async function buildTopStatsPayload({
     guildId,
-    tournament,
-    tournaments,
+    competition,
+    competitions,
     category,
     page
 }) {
-    const rows = await TournamentPlayer.find({
-        guildId,
-        tournamentId: tournament._id,
-        isActive: true,
-        [`stats.${category}`]: { $gt: 0 }
-    })
-        .populate('playerId')
-        .populate('teamId')
-        .sort({
-            [`stats.${category}`]: -1,
-            'stats.played': 1,
-            playerNameSnapshot: 1
+    let rows = [];
+
+    if (competition.type === 'tournament') {
+        rows = await TournamentPlayer.find({
+            guildId,
+            tournamentId: competition.doc._id,
+            isActive: true,
+            [`stats.${category}`]: { $gt: 0 }
         })
-        .lean();
+            .populate('playerId')
+            .populate('teamId')
+            .sort({
+                [`stats.${category}`]: -1,
+                'stats.played': 1,
+                playerNameSnapshot: 1
+            })
+            .lean();
+    } else {
+        rows = await EventPlayer.find({
+            guildId,
+            eventId: competition.doc._id,
+            isActive: true,
+            [`stats.${category}`]: { $gt: 0 }
+        })
+            .populate('playerId')
+            .sort({
+                [`stats.${category}`]: -1,
+                'stats.played': 1,
+                playerNameSnapshot: 1
+            })
+            .lean();
+    }
 
     const pages = chunk(rows, PAGE_SIZE);
     const totalPages = Math.max(pages.length, 1);
@@ -257,7 +401,7 @@ async function buildTopStatsPayload({
     page = Math.max(0, Math.min(page, totalPages - 1));
 
     const embed = buildEmbed({
-        tournament,
+        competition,
         category,
         rows,
         page,
@@ -268,7 +412,7 @@ async function buildTopStatsPayload({
     return {
         embeds: [embed],
         components: [
-            buildTournamentDropdown(tournaments, tournament.tournamentKey),
+            buildCompetitionDropdown(competitions, competition.value),
             buildCategoryDropdown(category),
             buildPaginationButtons(page, totalPages)
         ]
@@ -280,7 +424,7 @@ async function buildTopStatsPayload({
 ==================================================== */
 
 function buildEmbed({
-    tournament,
+    competition,
     category,
     rows,
     page,
@@ -288,6 +432,7 @@ function buildEmbed({
     list
 }) {
     const meta = CATEGORIES[category];
+    const isEvent = competition.type === 'event';
 
     const table = list.length
         ? list.map((entry, index) => {
@@ -311,12 +456,17 @@ function buildEmbed({
         }).join(' • ')
         : '—';
 
+    const isClosed = isEvent && competition.doc.isActive === false;
+    const typeLabel = isEvent ? (isClosed ? '[CLOSED EVENT]' : '[EVENT]') : '[TOURN]';
+    const compEmoji = competition.doc.emoji || '🏆';
+    const statusLine = isEvent ? (isClosed ? '🔴 CLOSED — stats kept' : competition.doc.channelId ? '🟢 ACTIVE' : '🟡 UNBOUND') : '';
+
     return new EmbedBuilder()
-        .setColor(0xFEBE10)
-        .setTitle(`${meta.emoji} ${meta.label} LEADERBOARD`)
+        .setColor(isClosed ? 0x95A5A6 : isEvent ? 0x9B59B6 : 0xFEBE10)
+        .setTitle(`${meta.emoji} ${meta.label} LEADERBOARD ${isEvent ? (isClosed ? '— CLOSED EVENT' : '— EVENT') : ''}`)
         .setDescription(
-            `🏆 **${tournament.name}**\n` +
-            `Key: \`${tournament.tournamentKey}\`\n\n` +
+            `${compEmoji} ${typeLabel} **${competition.name}**\n` +
+            `Key: \`${competition.key}\`${isEvent ? `\nStatus: ${statusLine}` : ''}\n\n` +
             '```' +
             'RANK | PLAYER           | STAT\n' +
             '--------------------------------\n' +
@@ -328,7 +478,7 @@ function buildEmbed({
             value: activeTalents
         })
         .setFooter({
-            text: `Page ${page + 1} of ${totalPages} • Total Contributors: ${rows.length}`
+            text: `Page ${page + 1} of ${totalPages} • Total Contributors: ${rows.length} • ${typeLabel} ${competition.key}`
         })
         .setTimestamp();
 }
@@ -337,19 +487,28 @@ function buildEmbed({
    COMPONENT BUILDERS
 ==================================================== */
 
-function buildTournamentDropdown(tournaments, selectedKey) {
+function buildCompetitionDropdown(competitions, selectedValue) {
+    const options = competitions.slice(0, 25).map(comp => ({
+        label: truncate(comp.label, 100),
+        description: truncate(comp.description, 100),
+        value: comp.value,
+        default: comp.value === selectedValue
+    }));
+
+    if (!options.length) {
+        options.push({
+            label: 'No competitions',
+            description: 'No tournaments or events',
+            value: 'tournament:none',
+            default: true
+        });
+    }
+
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId('topstats_tournament')
-            .setPlaceholder('Select tournament')
-            .addOptions(
-                tournaments.slice(0, 25).map(tournament => ({
-                    label: truncate(tournament.name || tournament.tournamentKey, 80),
-                    description: `Key: ${tournament.tournamentKey}`,
-                    value: tournament.tournamentKey,
-                    default: tournament.tournamentKey === selectedKey
-                }))
-            )
+            .setPlaceholder('Select tournament / event')
+            .addOptions(options)
     );
 }
 
