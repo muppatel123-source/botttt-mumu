@@ -33,7 +33,7 @@ const tournamentSettingsSchema = new mongoose.Schema(
 
         formatType: {
             type: String,
-            enum: ['league', 'groups_knockout', 'mega_table_playoffs', 'custom'],
+            enum: ['league', 'groups_knockout', 'mega_table_playoffs', 'club_world_cup', 'custom'],
             default: 'league'
         },
 
@@ -71,6 +71,11 @@ const tournamentSettingsSchema = new mongoose.Schema(
             default: 0
         },
 
+        super8QualificationSpots: {
+            type: Number,
+            default: 4
+        },
+
         standingsBackground: {
             type: String,
             default: null
@@ -103,7 +108,7 @@ const tournamentSettingsSchema = new mongoose.Schema(
 
         currentPhase: {
             type: String,
-            enum: ['registration', 'league', 'groups', 'knockout', 'completed'],
+            enum: ['registration', 'league', 'groups', 'super8', 'knockout', 'completed'],
             default: 'registration'
         },
 
@@ -465,6 +470,124 @@ tournamentPlayerSchema.index(
 
 /*
 ========================================
+EVENT SETTINGS
+Freestyle event for daily tracking (UCL etc)
+No teams, channel-bound, .as auto-routes
+========================================
+*/
+const eventSettingsSchema = new mongoose.Schema(
+    {
+        guildId: {
+            type: String,
+            required: true,
+            index: true
+        },
+
+        eventKey: {
+            type: String,
+            required: true,
+            trim: true,
+            lowercase: true
+        },
+
+        name: {
+            type: String,
+            default: ''
+        },
+
+        channelId: {
+            type: String,
+            default: '',
+            index: true
+        },
+
+        isActive: {
+            type: Boolean,
+            default: true
+        },
+
+        emoji: {
+            type: String,
+            default: '🏆'
+        },
+
+        createdBy: {
+            type: String,
+            default: ''
+        }
+    },
+    { timestamps: true }
+);
+
+eventSettingsSchema.index(
+    { guildId: 1, eventKey: 1 },
+    { unique: true }
+);
+
+eventSettingsSchema.index(
+    { guildId: 1, channelId: 1 }
+);
+
+/*
+========================================
+EVENT PLAYER
+Player stats per event (no team required)
+========================================
+*/
+const eventPlayerSchema = new mongoose.Schema(
+    {
+        guildId: {
+            type: String,
+            required: true,
+            index: true
+        },
+
+        eventId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'EventSettings',
+            required: true,
+            index: true
+        },
+
+        playerId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Player',
+            required: true,
+            index: true
+        },
+
+        playerNameSnapshot: {
+            type: String,
+            default: ''
+        },
+
+        isActive: {
+            type: Boolean,
+            default: true
+        },
+
+        stats: {
+            played: { type: Number, default: 0 },
+            goals: { type: Number, default: 0 },
+            assists: { type: Number, default: 0 },
+            saves: { type: Number, default: 0 },
+            tackles: { type: Number, default: 0 },
+            interceptions: { type: Number, default: 0 },
+            yc: { type: Number, default: 0 },
+            rc: { type: Number, default: 0 },
+            mvps: { type: Number, default: 0 }
+        }
+    },
+    { timestamps: true }
+);
+
+eventPlayerSchema.index(
+    { guildId: 1, eventId: 1, playerId: 1 },
+    { unique: true }
+);
+
+/*
+========================================
 FIXTURE
 Tournament-specific fixture.
 ========================================
@@ -495,6 +618,7 @@ const fixtureSchema = new mongoose.Schema(
             enum: [
                 'league',
                 'group',
+                'super8',
                 'qualifier',
                 'eliminator',
                 'quarterfinal',
@@ -802,6 +926,8 @@ const blacklistSchema = new mongoose.Schema(
 
 module.exports = {
     TournamentSettings: mongoose.models.TournamentSettings || mongoose.model('TournamentSettings', tournamentSettingsSchema),
+    EventSettings: mongoose.models.EventSettings || mongoose.model('EventSettings', eventSettingsSchema),
+    EventPlayer: mongoose.models.EventPlayer || mongoose.model('EventPlayer', eventPlayerSchema),
     Team: mongoose.models.Team || mongoose.model('Team', teamSchema),
     Player: mongoose.models.Player || mongoose.model('Player', playerSchema),
     TournamentTeam: mongoose.models.TournamentTeam || mongoose.model('TournamentTeam', tournamentTeamSchema),
