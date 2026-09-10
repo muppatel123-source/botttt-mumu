@@ -2,15 +2,16 @@
  * addstats.js
  *
  * Bulk add raw handfootball player stats from CSV data.
- * Organizers can reply to a stats message with `.as` or paste data directly.
- * Updates TournamentPlayer + UserProfile (all-time), then refreshes live top stats.
- * Sends a detailed DM report to the organizer.
+ * Supports both Tournaments and Freestyle Events (UCL etc).
+ * - If channel is bound to an event (via .setevent), .as auto-routes to event when no key given.
+ * - If explicit key matches event, updates event stats.
+ * - Otherwise tournament flow (default tournament fallback).
  *
  * Input format (per line):
  *   discordID, goals, assists, interceptions, tackles, saves
  *
- * Usage: .as [tournamentKey] (reply to stats message)
- *        .as [tournamentKey] <pasted lines>
+ * Usage: .as [tournamentKey/eventKey] (reply to stats message)
+ *        .as [tournamentKey/eventKey] <pasted lines>
  * Slash: /addstats key:<key> data:<lines> count_played:<bool>
  *
  * Aliases: as
@@ -22,15 +23,17 @@ const {
     PermissionFlagsBits
 } = require('discord.js');
 
-const { Player, TournamentPlayer, UserProfile } = require('../../models/Tournament');
+const { Player, TournamentPlayer, EventPlayer, UserProfile } = require('../../models/Tournament');
 const { getDefaultTournament, getTournamentByKey } = require('../../utils/getTournament');
+const { getEventByKey, getEventByChannel } = require('../../utils/getEvent');
+const { ensurePlayer } = require('../../utils/playerHelpers');
 const { updateLiveTopStats } = require('../../utils/updateTopStats');
 const { isOrganizer } = require('../../utils/isOrganizer');
 
 module.exports = {
     name: 'addstats',
-    description: 'Bulk add raw handfootball player stats.',
-    usage: '.addstats [tournamentKey] or reply to raw stats message with .as [tournamentKey]',
+    description: 'Bulk add raw handfootball player stats (tournaments + events).',
+    usage: '.addstats [tournamentKey/eventKey] or reply to raw stats message with .as [key]',
     aliases: ['as'],
     hidden: false,
     cooldown: 5,
@@ -41,7 +44,7 @@ module.exports = {
         .setDescription('Bulk add raw handfootball player stats')
         .addStringOption(opt =>
             opt.setName('key')
-                .setDescription('Optional tournament key')
+                .setDescription('Optional tournament or event key (UCL, league-s1, etc)')
                 .setRequired(false)
         )
         .addStringOption(opt =>
@@ -67,33 +70,94 @@ module.exports = {
                 return message.reply('🚫 You are not authorized to use this command.');
             }
 
-            const possibleKey = args[0]?.toLowerCase();
-            const tournament = await resolveTournament(message.guild.id, possibleKey);
+            const possibleKey = args[0]?.toLowerCase() || null;
 
-            if (!tournament) {
-                return message.reply('❌ Tournament not found. Set a default tournament or use `.as <tournamentKey>`.');
+            // Resolve both tournament and event for the possible key
+            let tournamentByKey = null;
+            let eventByKey = null;
+
+            if (possibleKey) {
+                const [t, e] = await Promise.all([
+                    getTournamentByKey(message.guild.id, possibleKey, { includeCompleted: true }),
+                    getEventByKey(message.guild.id, possibleKey)
+                ]);
+                tournamentByKey = t;
+                eventByKey = e;
             }
 
-            const firstArgIsKey = Boolean(possibleKey && possibleKey === tournament.tournamentKey);
+            const firstArgIsKey = Boolean(
+                possibleKey &&
+                (tournamentByKey?.tournamentKey === possibleKey || eventByKey?.eventKey === possibleKey)
+            );
+
+            // Determine target: explicit key > channel-bound event > default tournament
+            let targetType = null;
+            let targetDoc = null;
+
+            if (firstArgIsKey) {
+                if (tournamentByKey) {
+                    targetType = 'tournament';
+                    targetDoc = tournamentByKey;
+                } else if (eventByKey) {
+                    targetType = 'event';
+                    targetDoc = eventByKey;
+                }
+            } else {
+                // No explicit key, check channel binding
+                const eventByChannel = await getEventByChannel(message.guild.id, message.channel.id);
+                if (eventByChannel) {
+                    targetType = 'event';
+                    targetDoc = eventByChannel;
+                } else {
+                    // Fallback to default tournament
+                    const defaultTournament = await getDefaultTournament(message.guild.id, { includeCompleted: true });
+                    if (defaultTournament) {
+                        targetType = 'tournament';
+                        targetDoc = defaultTournament;
+                    }
+                }
+            }
+
+            if (!targetDoc) {
+                return message.reply('❌ No tournament or event found. Set a default tournament, bind an event with `.setevent <key>` in this channel, or use `.as <key>`.');
+            }
+
+            if (targetType === 'event' && targetDoc.isActive === false) {
+                return message.reply(`🔒 Event \`${targetDoc.eventKey}\` (**${targetDoc.name}**) is **closed**. Stats are kept but no new \`.as\` allowed. Reopen with \`.setevent open ${targetDoc.eventKey}\`.`);
+            }
+
             const rawData = await getRawStatsFromMessage(message, args, firstArgIsKey);
 
             if (!rawData) {
                 return message.reply(
-                    '❓ Reply to the HandFootball raw stats message with `.as` or use `.as <tournamentKey>`.'
+                    '❓ Reply to the HandFootball raw stats message with `.as` or use `.as <tournamentKey/eventKey>`.'
                 );
             }
 
-            const waitMsg = await message.reply('⏳ Processing raw match stats...');
+            const waitMsg = await message.reply(`⏳ Processing raw match stats for **${targetType === 'event' ? targetDoc.name : targetDoc.name}** [${targetType}]...`);
 
-            return await processStats({
-                client: message.client,
-                guild: message.guild,
-                tournament,
-                rawData,
-                countPlayed: true,
-                organizerUser: message.author,
-                respondFinal: payload => waitMsg.edit(payload)
-            });
+            if (targetType === 'event') {
+                return await processEventStats({
+                    client: message.client,
+                    guild: message.guild,
+                    event: targetDoc,
+                    rawData,
+                    countPlayed: true,
+                    organizerUser: message.author,
+                    respondFinal: payload => waitMsg.edit(payload)
+                });
+            } else {
+                return await processTournamentStats({
+                    client: message.client,
+                    guild: message.guild,
+                    tournament: targetDoc,
+                    rawData,
+                    countPlayed: true,
+                    organizerUser: message.author,
+                    respondFinal: payload => waitMsg.edit(payload)
+                });
+            }
+
         } catch (error) {
             console.error('[addstats] prefix error:', error);
             return message.reply('❌ Failed to process raw stats.');
@@ -116,27 +180,76 @@ module.exports = {
             await interaction.deferReply({ ephemeral: true });
 
             const key = interaction.options.getString('key')?.toLowerCase() || null;
-            const tournament = await resolveTournament(interaction.guild.id, key);
-
-            if (!tournament) {
-                return interaction.editReply('❌ Tournament not found. Set a default tournament or provide a valid key.');
-            }
-
             const rawData = interaction.options.getString('data');
+            const countPlayed = interaction.options.getBoolean('count_played') ?? true;
 
             if (!rawData) {
                 return interaction.editReply('❌ Slash version needs pasted data. For reply-based stats, use `.as`.');
             }
 
-            return await processStats({
-                client: interaction.client,
-                guild: interaction.guild,
-                tournament,
-                rawData,
-                countPlayed: interaction.options.getBoolean('count_played') ?? true,
-                organizerUser: interaction.user,
-                respondFinal: payload => interaction.editReply(payload)
-            });
+            let targetType = null;
+            let targetDoc = null;
+
+            if (key) {
+                const [t, e] = await Promise.all([
+                    getTournamentByKey(interaction.guild.id, key, { includeCompleted: true }),
+                    getEventByKey(interaction.guild.id, key)
+                ]);
+
+                if (t) {
+                    targetType = 'tournament';
+                    targetDoc = t;
+                } else if (e) {
+                    targetType = 'event';
+                    targetDoc = e;
+                } else {
+                    return interaction.editReply(`❌ No tournament or event found with key \`${key}\`.`);
+                }
+            } else {
+                // No key provided, check channel binding
+                const eventByChannel = await getEventByChannel(interaction.guild.id, interaction.channel.id);
+                if (eventByChannel) {
+                    targetType = 'event';
+                    targetDoc = eventByChannel;
+                } else {
+                    const defaultTournament = await getDefaultTournament(interaction.guild.id, { includeCompleted: true });
+                    if (defaultTournament) {
+                        targetType = 'tournament';
+                        targetDoc = defaultTournament;
+                    }
+                }
+            }
+
+            if (!targetDoc) {
+                return interaction.editReply('❌ No tournament or event found. Set default tournament or bind event with `/setevent`.');
+            }
+
+            if (targetType === 'event' && targetDoc.isActive === false) {
+                return interaction.editReply(`🔒 Event \`${targetDoc.eventKey}\` (**${targetDoc.name}**) is **closed**. Stats are kept but no new stats allowed. Reopen with \`/setevent open ${targetDoc.eventKey}\`.`);
+            }
+
+            if (targetType === 'event') {
+                return await processEventStats({
+                    client: interaction.client,
+                    guild: interaction.guild,
+                    event: targetDoc,
+                    rawData,
+                    countPlayed,
+                    organizerUser: interaction.user,
+                    respondFinal: payload => interaction.editReply(payload)
+                });
+            } else {
+                return await processTournamentStats({
+                    client: interaction.client,
+                    guild: interaction.guild,
+                    tournament: targetDoc,
+                    rawData,
+                    countPlayed,
+                    organizerUser: interaction.user,
+                    respondFinal: payload => interaction.editReply(payload)
+                });
+            }
+
         } catch (error) {
             console.error('[addstats] slash error:', error);
 
@@ -153,32 +266,10 @@ module.exports = {
 };
 
 /* ====================================================
-   TOURNAMENT RESOLUTION
-==================================================== */
-
-/**
- * Resolve a tournament from a key, or fall back to the server default.
- * Includes completed tournaments so stats can be added retroactively.
- */
-async function resolveTournament(guildId, key) {
-    if (key) {
-        const found = await getTournamentByKey(guildId, key, { includeCompleted: true });
-        if (found) return found;
-    }
-
-    return getDefaultTournament(guildId, { includeCompleted: true });
-}
-
-/* ====================================================
    RAW DATA EXTRACTION
 ==================================================== */
 
-/**
- * Extract raw stats data from a replied message or command args.
- * Supports code blocks and plain CSV lines.
- */
 async function getRawStatsFromMessage(message, args, firstArgIsKey) {
-    // Try fetching the replied-to message
     const replied = message.reference?.messageId
         ? await message.channel.messages.fetch(message.reference.messageId).catch(() => null)
         : null;
@@ -187,17 +278,12 @@ async function getRawStatsFromMessage(message, args, firstArgIsKey) {
         return extractRawStatsBlock(replied.content);
     }
 
-    // Fall back to args
     const contentArgs = firstArgIsKey ? args.slice(1) : args;
     if (!contentArgs.length) return '';
 
     return contentArgs.join(' ');
 }
 
-/**
- * Extract a stats block from message content.
- * Tries code block first, then filters lines starting with a Discord ID.
- */
 function extractRawStatsBlock(content) {
     const codeBlockMatch = content.match(/```(?:\w+)?\n?([\s\S]*?)```/);
     if (codeBlockMatch) return codeBlockMatch[1].trim();
@@ -210,14 +296,10 @@ function extractRawStatsBlock(content) {
 }
 
 /* ====================================================
-   CORE PROCESSING
+   CORE PROCESSING - TOURNAMENT
 ==================================================== */
 
-/**
- * Parse and apply bulk stats to tournament players.
- * Also updates UserProfile all-time stats and DMs the organizer a report.
- */
-async function processStats({ client, guild, tournament, rawData, countPlayed, organizerUser, respondFinal }) {
+async function processTournamentStats({ client, guild, tournament, rawData, countPlayed, organizerUser, respondFinal }) {
     const lines = rawData.split('\n').map(line => line.trim()).filter(Boolean);
 
     const successLog = [];
@@ -246,7 +328,6 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
 
         const { discordID, goals, assists, interceptions, tackles, saves } = parsed.data;
 
-        // ── Find player ──
         const player = await Player.findOne({ guildId: guild.id, discordID });
 
         if (!player) {
@@ -255,7 +336,6 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
             continue;
         }
 
-        // ── Build increment ──
         const inc = {
             'stats.goals': goals,
             'stats.assists': assists,
@@ -264,11 +344,8 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
             'stats.saves': saves
         };
 
-        if (countPlayed) {
-            inc['stats.played'] = 1;
-        }
+        if (countPlayed) inc['stats.played'] = 1;
 
-        // ── Update tournament player ──
         const tp = await TournamentPlayer.findOneAndUpdate(
             { guildId: guild.id, tournamentId: tournament._id, playerId: player._id, isActive: true },
             { $inc: inc },
@@ -281,7 +358,6 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
             continue;
         }
 
-        // ── Update all-time user profile (upsert) ──
         await UserProfile.findOneAndUpdate(
             { guildId: guild.id, discordID },
             {
@@ -299,7 +375,6 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
             { upsert: true, returnDocument: 'after' }
         );
 
-        // ── Track totals ──
         processedCount++;
         totals.goals += goals;
         totals.assists += assists;
@@ -313,17 +388,13 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
         );
     }
 
-    // ── Refresh live top stats ──
     await updateLiveTopStats(client, guild.id, tournament.tournamentKey).catch(console.error);
 
-    if (global.io) {
-        global.io.emit('update');
-    }
+    if (global.io) global.io.emit('update');
 
-    // ── DM detailed report to organizer ──
     const dmEmbed = new EmbedBuilder()
         .setColor(processedCount > 0 ? 0x2ECC71 : 0xE74C3C)
-        .setTitle('📊 Stats Update Details')
+        .setTitle('📊 Tournament Stats Update')
         .setDescription(
             `Tournament: **${tournament.name}**\n` +
             `Key: \`${tournament.tournamentKey}\`\n\n` +
@@ -358,31 +429,165 @@ async function processStats({ client, guild, tournament, rawData, countPlayed, o
 
     await organizerUser.send({ embeds: [dmEmbed] }).catch(() => null);
 
-    // ── Brief in-channel confirmation ──
-    return respondFinal({ content: '✅ Stats Updated', embeds: [] });
+    return respondFinal({ content: '✅ Tournament Stats Updated', embeds: [] });
+}
+
+/* ====================================================
+   CORE PROCESSING - EVENT (FREESTYLE)
+==================================================== */
+
+async function processEventStats({ client, guild, event, rawData, countPlayed, organizerUser, respondFinal }) {
+    const lines = rawData.split('\n').map(line => line.trim()).filter(Boolean);
+
+    const successLog = [];
+    const skippedLog = [];
+
+    let processedCount = 0;
+    let skippedCount = 0;
+
+    const totals = {
+        goals: 0,
+        assists: 0,
+        interceptions: 0,
+        tackles: 0,
+        saves: 0,
+        played: 0
+    };
+
+    for (const line of lines) {
+        const parsed = parseRawStatLine(line);
+
+        if (!parsed.ok) {
+            skippedCount++;
+            skippedLog.push(`Invalid line: ${line}`);
+            continue;
+        }
+
+        const { discordID, goals, assists, interceptions, tackles, saves } = parsed.data;
+
+        // Auto-create player for events
+        const player = await ensurePlayer(guild, discordID);
+
+        if (!player) {
+            skippedCount++;
+            skippedLog.push(`Failed to create player: ${discordID}`);
+            continue;
+        }
+
+        const inc = {
+            'stats.goals': goals,
+            'stats.assists': assists,
+            'stats.interceptions': interceptions,
+            'stats.tackles': tackles,
+            'stats.saves': saves
+        };
+
+        if (countPlayed) inc['stats.played'] = 1;
+
+        // Upsert EventPlayer
+        await EventPlayer.findOneAndUpdate(
+            { guildId: guild.id, eventId: event._id, playerId: player._id },
+            {
+                $setOnInsert: {
+                    guildId: guild.id,
+                    eventId: event._id,
+                    playerId: player._id,
+                    playerNameSnapshot: player.name,
+                    isActive: true
+                },
+                $set: { playerNameSnapshot: player.name },
+                $inc: inc
+            },
+            { upsert: true, returnDocument: 'after' }
+        );
+
+        // Update all-time (yes per user choice)
+        await UserProfile.findOneAndUpdate(
+            { guildId: guild.id, discordID: player.discordID },
+            {
+                $setOnInsert: { guildId: guild.id, discordID: player.discordID },
+                $set: { displayName: player.name },
+                $inc: {
+                    'allTimeStats.goals': goals,
+                    'allTimeStats.assists': assists,
+                    'allTimeStats.interceptions': interceptions,
+                    'allTimeStats.tackles': tackles,
+                    'allTimeStats.saves': saves,
+                    'allTimeStats.played': countPlayed ? 1 : 0
+                }
+            },
+            { upsert: true, returnDocument: 'after' }
+        );
+
+        processedCount++;
+        totals.goals += goals;
+        totals.assists += assists;
+        totals.interceptions += interceptions;
+        totals.tackles += tackles;
+        totals.saves += saves;
+        if (countPlayed) totals.played += 1;
+
+        successLog.push(
+            `${player.name}: ${buildStatString({ goals, assists, interceptions, tackles, saves, countPlayed })}`
+        );
+    }
+
+    if (global.io) global.io.emit('update');
+
+    const dmEmbed = new EmbedBuilder()
+        .setColor(processedCount > 0 ? 0x2ECC71 : 0xE74C3C)
+        .setTitle('📊 Event Stats Update')
+        .setDescription(
+            `Event: **${event.name}**\n` +
+            `Key: \`${event.eventKey}\`\n` +
+            `Channel: ${event.channelId ? `<#${event.channelId}>` : 'Not bound'}\n\n` +
+            `Processed: **${processedCount}**\n` +
+            `Skipped: **${skippedCount}**`
+        )
+        .addFields(
+            {
+                name: 'Totals Added',
+                value:
+                    `⚽ Goals: **${totals.goals}**\n` +
+                    `🎯 Assists: **${totals.assists}**\n` +
+                    `🧠 Interceptions: **${totals.interceptions}**\n` +
+                    `⚔️ Tackles: **${totals.tackles}**\n` +
+                    `🧤 Saves: **${totals.saves}**\n` +
+                    `🏟️ Played: **${totals.played}**`,
+                inline: false
+            },
+            {
+                name: 'Updated Players',
+                value: successLog.length ? successLog.slice(0, 35).join('\n') : 'No stats were updated.',
+                inline: false
+            },
+            {
+                name: 'Skipped',
+                value: skippedLog.length ? skippedLog.slice(0, 20).join('\n') : 'None',
+                inline: false
+            }
+        )
+        .setFooter({ text: `${event.name} • ${event.eventKey} [EVENT]` })
+        .setTimestamp();
+
+    await organizerUser.send({ embeds: [dmEmbed] }).catch(() => null);
+
+    return respondFinal({ content: `✅ Event Stats Updated — **${event.name}**`, embeds: [] });
 }
 
 /* ====================================================
    PARSING HELPERS
 ==================================================== */
 
-/**
- * Parse a single CSV stats line.
- * Format: discordID, goals, assists, interceptions, tackles, saves
- */
 function parseRawStatLine(line) {
     const parts = line.split(',').map(part => part.trim());
 
-    if (parts.length < 6) {
-        return { ok: false };
-    }
+    if (parts.length < 6) return { ok: false };
 
     const [rawId, rawGoals, rawAssists, rawInterceptions, rawTackles, rawSaves] = parts;
     const discordID = rawId.replace(/[<@!>]/g, '');
 
-    if (!/^\d{17,20}$/.test(discordID)) {
-        return { ok: false };
-    }
+    if (!/^\d{17,20}$/.test(discordID)) return { ok: false };
 
     return {
         ok: true,
@@ -397,26 +602,18 @@ function parseRawStatLine(line) {
     };
 }
 
-/**
- * Parse an integer, returning 0 for NaN.
- */
 function safeInt(value) {
     const parsed = parseInt(value, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-/**
- * Build a compact stat display string for the DM report.
- */
 function buildStatString({ goals, assists, interceptions, tackles, saves, countPlayed }) {
     const chunks = [];
-
     if (goals > 0) chunks.push(`${goals}⚽`);
     if (assists > 0) chunks.push(`${assists}🎯`);
     if (interceptions > 0) chunks.push(`${interceptions}🧠`);
     if (tackles > 0) chunks.push(`${tackles}⚔️`);
     if (saves > 0) chunks.push(`${saves}🧤`);
     if (countPlayed) chunks.push('+1🏟️');
-
     return chunks.length ? chunks.join(' ') : '✅';
 }
