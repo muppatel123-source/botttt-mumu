@@ -413,7 +413,6 @@ async function runSetMVPEvent({
                     guildId: guild.id,
                     eventId: event._id,
                     playerId: player._id,
-                    playerNameSnapshot: player.name,
                     isActive: true
                 },
                 $set: { playerNameSnapshot: player.name },
